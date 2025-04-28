@@ -10,12 +10,14 @@ from models.vgg import Vgg19
 ###############################################################################
 # Functions
 ###############################################################################
+
+# 计算图像梯度
 def compute_gradient(img):
     gradx = img[..., 1:, :] - img[..., :-1, :]
     grady = img[..., 1:] - img[..., :-1]
     return gradx, grady
 
-
+# GradientLoss 类是一个 ​​基于图像梯度的 L1 损失模块​​，用于在深度学习任务中强制生成图像与目标图像在边缘结构上保持一致。
 class GradientLoss(nn.Module):
     def __init__(self):
         super(GradientLoss, self).__init__()
@@ -28,6 +30,15 @@ class GradientLoss(nn.Module):
         return self.loss(predict_gradx, target_gradx) + self.loss(predict_grady, target_grady)
 
 
+#ContainLoss 类是一个 ​​用于图像分解任务的梯度约束损失模块​​，专门设计用于确保分解后的透射层（predict_t）和反射层（predict_r）的梯度与输入图像（input_image）的梯度保持合理的比例关系。
+# ​设计意图​​
+# ​​物理合理性​​
+# 透射层和反射层的梯度强度应与输入图像梯度成比例（如反射层在强边缘区域的梯度不应超过输入梯度）。
+# ​​分解稳定性​​
+# 防止模型通过极端放大某一层的梯度来最小化重构误差（如反射层“吸收”所有边缘导致透射层过于平滑）。
+# ​​与排斥损失互补​​
+# ​​ExclusionLoss​​：强制透射层和反射层梯度互斥（避免重叠）。
+# ​​ContainLoss​​：约束各层梯度与输入的关系（避免强度失衡）。
 class ContainLoss(nn.Module):
     def __init__(self, eps=1e-12):
         super(ContainLoss, self).__init__()
@@ -47,6 +58,8 @@ class ContainLoss(nn.Module):
         return out / pix_num
 
 
+
+# MultipleLoss 类是一个 ​​多损失组合模块​​，用于在深度学习任务中同时优化多个损失函数，并通过权重分配平衡不同损失的影响
 class MultipleLoss(nn.Module):
     def __init__(self, losses, weight=None):
         super(MultipleLoss, self).__init__()
@@ -60,6 +73,15 @@ class MultipleLoss(nn.Module):
         return total_loss
 
 
+
+# ​​数据标准化 (Normalization)​​
+# 将输入图像转换为零均值、单位方差的形式（当 norm=True）：
+# output = (input - mean) / std
+# ​​数据反标准化 (Denormalization)​​
+# 将标准化数据还原到原始范围（当 norm=False）：
+# output = input * std + mean
+# ​​无参训练​​
+# 设置 requires_grad=False 确保权重和偏置在训练中不被更新。
 class MeanShift(nn.Conv2d):
     def __init__(self, data_mean, data_std, data_range=1, norm=True):
         """norm (bool): normalize/denormalize the stats"""
@@ -75,6 +97,8 @@ class MeanShift(nn.Conv2d):
             self.weight.data.mul_(std.view(c, 1, 1, 1))
             self.bias.data = data_range * torch.Tensor(data_mean)
         self.requires_grad = False
+
+
 
 
 class VGGLoss(nn.Module):
@@ -113,7 +137,7 @@ def l1_norm(x):
 
 
 def l2_norm(x):
-    return torch.mean(torch.square(x))
+    return torch.mean(torch.square(x)) # 对所有平方值求平均，得到标量结果
 
 
 def gradient_norm_kernel(x, kernel_size=10):

@@ -19,12 +19,19 @@ opt.display_id = 0
 opt.verbose = False
 datadir = os.path.join(os.path.expanduser('~'), '/opt/datasets/sirs')
 
-eval_dataset_real = datasets.DSRTestDataset(join(datadir, f'test/real20_{opt.real20_size}'),
+# eval_dataset_real = datasets.DSRTestDataset(join(datadir, f'test/real20_{opt.real20_size}'),
+#                                             fns=read_fns('data/real_test.txt'), if_align=opt.if_align)
+# eval_dataset_solidobject = datasets.DSRTestDataset(join(datadir, 'test/SIR2/SolidObjectDataset'),
+#                                                    if_align=opt.if_align)
+# eval_dataset_postcard = datasets.DSRTestDataset(join(datadir, 'test/SIR2/PostcardDataset'), if_align=opt.if_align)
+# eval_dataset_wild = datasets.DSRTestDataset(join(datadir, 'test/SIR2/WildSceneDataset'), if_align=opt.if_align)
+
+eval_dataset_real = datasets.DSRTestDataset('./dataset/real20',
                                             fns=read_fns('data/real_test.txt'), if_align=opt.if_align)
-eval_dataset_solidobject = datasets.DSRTestDataset(join(datadir, 'test/SIR2/SolidObjectDataset'),
+eval_dataset_solidobject = datasets.DSRTestDataset('./dataset/SIR2/SolidObjectDataset',
                                                    if_align=opt.if_align)
-eval_dataset_postcard = datasets.DSRTestDataset(join(datadir, 'test/SIR2/PostcardDataset'), if_align=opt.if_align)
-eval_dataset_wild = datasets.DSRTestDataset(join(datadir, 'test/SIR2/WildSceneDataset'), if_align=opt.if_align)
+eval_dataset_postcard = datasets.DSRTestDataset('./dataset/SIR2/PostcardDataset', if_align=opt.if_align)
+eval_dataset_wild = datasets.DSRTestDataset('./dataset/SIR2/WildSceneDataset', if_align=opt.if_align)
 
 eval_dataloader_real = datasets.DataLoader(
     eval_dataset_real, batch_size=1, shuffle=True,
@@ -52,6 +59,7 @@ res1 = engine.eval(eval_dataloader_real, dataset_name='testdata_real',
 
 res2 = engine.eval(eval_dataloader_solidobject, dataset_name='testdata_solidobject',
                   savedir=join(result_dir, 'solidobject'), suffix='solidobject')
+
 res3 = engine.eval(eval_dataloader_postcard, dataset_name='testdata_postcard',
                   savedir=join(result_dir, 'postcard'), suffix='postcard')
 

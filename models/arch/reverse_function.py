@@ -1,4 +1,3 @@
-
 import torch
 from typing import Any, Iterable, List, Tuple, Callable
 import torch.distributed as dist
@@ -35,22 +34,29 @@ def detach_and_grad(inputs: Tuple[Any, ...]) -> Tuple[torch.Tensor, ...]:
             x.requires_grad = True
             out.append(x)
         return tuple(out)
-    else:
+    else: 
         raise RuntimeError(
             "Only tuple of tensors is supported. Got Unsupported input type: ", type(inputs).__name__)
 
 def get_cpu_and_gpu_states(gpu_devices):
     return torch.get_rng_state(), get_gpu_states(gpu_devices)
 
-class ReverseFunction(torch.autograd.Function):
+
+
+
+# ReverseFunction 是一个自定义的 PyTorch 自动微分函数，用于实现 ​​可逆神经网络的反向传播逻辑​​
+# “可逆”并非数学上的严格逆运算，而是指 ​​通过反向传播过程重新计算前向中间变量​​，从而避免在前向时保存所有中间结果，实现​​内存优化​​。
+# 其核心思想类似​​梯度检查点（Gradient Checkpointing）​​，但针对残差结构进行了特殊设计。
+class ReverseFunction(torch.autograd.Function): 
     @staticmethod
     def forward(ctx, run_functions, alpha, *args):
-        l0, l1, l2, l3 = run_functions
-        alpha0, alpha1, alpha2, alpha3 = alpha
+        l0, l1, l2, l3 = run_functions # 四个阶段的处理函数
+        alpha0, alpha1, alpha2, alpha3 = alpha # 各阶段的残差权重
         ctx.run_functions  = run_functions
         ctx.alpha = alpha
         ctx.preserve_rng_state = True
 
+        # 保存随机状态（CPU/GPU RNG、自动混合精度配置）
         ctx.gpu_autocast_kwargs = {"enabled": torch.is_autocast_enabled(),
                                    "dtype": torch.get_autocast_gpu_dtype(),
                                    "cache_enabled": torch.is_autocast_cache_enabled()}
@@ -68,18 +74,19 @@ class ReverseFunction(torch.autograd.Function):
             gpu_devices = get_gpu_device(*args)
             ctx.gpu_devices = gpu_devices
             ctx.cpu_states_0, ctx.gpu_states_0  = get_cpu_and_gpu_states(gpu_devices)
-            c0 = l0(x, c1) + c0*alpha0
+            c0 = l0(x, c1) + c0*alpha0 # 阶段0  c0_prev是输入的c0，被更新为新值
             ctx.cpu_states_1, ctx.gpu_states_1  = get_cpu_and_gpu_states(gpu_devices)
-            c1 = l1(c0, c2) + c1*alpha1
+            c1 = l1(c0, c2) + c1*alpha1 # 阶段1
             ctx.cpu_states_2, ctx.gpu_states_2  = get_cpu_and_gpu_states(gpu_devices)
-            c2 = l2(c1, c3) + c2*alpha2
+            c2 = l2(c1, c3) + c2*alpha2 # 阶段3
             ctx.cpu_states_3, ctx.gpu_states_3  = get_cpu_and_gpu_states(gpu_devices)
-            c3 = l3(c2, None) + c3*alpha3
-        ctx.save_for_backward(x, c0, c1, c2, c3)
+            c3 = l3(c2, None) + c3*alpha3 # 阶段4
+        ctx.save_for_backward(x, c0, c1, c2, c3) # 保存必要张量
         return x, c0, c1 ,c2, c3
 
     @staticmethod
     def backward(ctx, *grad_outputs):
+       
         x, c0, c1, c2, c3 = ctx.saved_tensors
         l0, l1, l2, l3 = ctx.run_functions
         alpha0, alpha1, alpha2, alpha3 = ctx.alpha
@@ -93,11 +100,13 @@ class ReverseFunction(torch.autograd.Function):
             
             g3_up = g3_right
             g3_left = g3_up*alpha3 ##shortcut
+
+             # 恢复前向传播的随机状态与自动混合精度配置
             set_device_states(ctx.cpu_states_3, ctx.gpu_devices, ctx.gpu_states_3)                    
-            oup3 = l3(c2, None)
+            oup3 = l3(c2, None) # 重新计算前向输出
             torch.autograd.backward(oup3, g3_up, retain_graph=True)
             with torch.no_grad():
-                c3_left = (1/alpha3)*(c3 - oup3) ## feature reverse
+                c3_left = (1/alpha3)*(c3 - oup3) ## feature reverse # 逆向恢复c2（假设alpha3≠0）
             g2_up = g2_right+ c2.grad
             g2_left = g2_up*alpha2 ##shortcut
 
@@ -145,6 +154,7 @@ class ReverseFunction(torch.autograd.Function):
             cout0 = c0_left*alpha0 ##alpha0 update
             torch.autograd.backward(cout0, g0_up)
         
+        # 返回梯度（None表示不需要计算run_functions和alpha的梯度）
         if ctx.first_col:
             return None, None, gx_up, None, None, None, None
         else:

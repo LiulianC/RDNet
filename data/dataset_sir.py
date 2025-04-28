@@ -11,9 +11,9 @@ import torchvision.transforms.functional as TF
 from PIL import Image
 from scipy.signal import convolve2d
 
-from data.image_folder import make_dataset
-from data.torchdata import Dataset as BaseDataset
-from data.transforms import to_tensor
+from .image_folder import make_dataset
+from .torchdata import Dataset as BaseDataset
+from .transforms import to_tensor
 
 
 def __scale_width(img, target_width):
@@ -209,8 +209,9 @@ class DSRTestDataset(BaseDataset):
 
     def __getitem__(self, index):
         fn = self.fns[index]
-
-        t_img = Image.open(join(self.datadir, 'transmission_layer', fn)).convert('RGB')
+        # 将文件名中的第一个 'm' 替换为 'g'
+        fn_g = fn.replace('m', 'g', 1)
+        t_img = Image.open(join(self.datadir, 'transmission_layer', fn_g)).convert('RGB')
         m_img = Image.open(join(self.datadir, 'blended', fn)).convert('RGB')
 
         if self.if_align:

@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from pytorch_msssim import SSIM
+#from pytorch_msssim import SSIM
 from models.vit_feature_extractor import VitExtractor
 from models.vgg import Vgg19
 

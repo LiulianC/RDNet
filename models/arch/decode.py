@@ -1,5 +1,9 @@
 import torch.nn as nn
 
+# 构建 VGG 网络作为特征编码器​​（即图像特征提取器），
+# 主要用于计算机视觉任务中的 ​​特征提取​​
+
+
 def make_layers(cfg, batch_norm=False):
     layers = []
     in_channels = 3
@@ -15,6 +19,9 @@ def make_layers(cfg, batch_norm=False):
             in_channels = v
     return nn.Sequential(*layers)
 
+# 配置 'E' 对应 VGG19 的经典结构：
+# ​​数字​​：卷积层输出通道数（如 64 表示 64 个 3x3 卷积核）
+# 'M'​​：插入 2x2 最大池化层（分辨率减半）
 cfgs = {
     'E': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 256, 'M', 512, 512, 512, 512, 'M', 512, 512, 512, 512],
 }

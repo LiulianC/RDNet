@@ -88,7 +88,8 @@ def get_norm_layer(norm_type='instance'):
         raise NotImplementedError('normalization layer [%s] is not found' % norm_type)
     return norm_layer
 
-
+# define_D 函数是一个 ​​判别器（Discriminator）的工厂函数​​，
+# 用于根据配置参数动态创建不同类型的判别器模型。
 def define_D(opt, in_channels=3):
     # use_sigmoid = opt.gan_type == 'gan'
     use_sigmoid = False # incorporate sigmoid into BCE_stable loss
@@ -107,7 +108,7 @@ def define_D(opt, in_channels=3):
     if len(opt.gpu_ids) > 0:
         assert(torch.cuda.is_available())
         netD.cuda(opt.gpu_ids[0])
-    
+     
     return netD
 
 
@@ -119,6 +120,10 @@ def print_network(net):
     print('Total number of parameters: %d' % num_params)
     print('The size of receptive field: %d' % receptive_field(net))
 
+
+# receptive_field 函数用于 ​​计算神经网络（特别是CNN）的感受野（Receptive Field）大小​​，
+# 即输入图像中影响最终输出单个像素的区域范围
+# 感受野​​就是神经网络中“一个输出像素能看到输入图像的多大范围”。
 
 def receptive_field(net):
     def _f(output_size, ksize, stride, dilation):
@@ -137,7 +142,8 @@ def receptive_field(net):
         rsize = _f(rsize, ksize, stride, dilation)
     return rsize
 
-
+ # debug_network 函数是一个 ​​用于调试神经网络结构的工具​​，
+ # 它通过注册前向传播钩子（forward hook）来实时打印每个网络层的输出尺寸
 def debug_network(net):
     def _hook(m, i, o):
         print(o.size())
@@ -150,6 +156,8 @@ def debug_network(net):
 ##############################################################################
 
 # Defines the PatchGAN discriminator with the specified arguments.
+# NLayerDiscriminator 是一个 ​​基于多层卷积的通用GAN判别器​​，
+# 常用于图像生成任务（如CycleGAN、Pix2Pix）中判断输入图像的真伪
 class NLayerDiscriminator(nn.Module):
     def __init__(self, input_nc, ndf=64, n_layers=3, 
     norm_layer=nn.BatchNorm2d, use_sigmoid=False, 
@@ -203,6 +211,8 @@ class NLayerDiscriminator(nn.Module):
             return self.model(input)
 
 
+#  Discriminator_VGG 是一个 ​​基于VGG架构设计的深度判别器​​，
+# 专为图像生成对抗网络（GAN）任务优化，用于判断输入图像的真伪或质量。
 class Discriminator_VGG(nn.Module):
     def __init__(self, in_channels=3, use_sigmoid=True):
         super(Discriminator_VGG, self).__init__()
@@ -270,6 +280,14 @@ class Discriminator_VGG(nn.Module):
         out = self.tail(x)
         return out
 
+
+
+
+
+
+
+# Discriminator_VGG 类是一个 ​​基于VGG网络架构改进的深度判别器​​，
+# 主要用于生成对抗网络（GAN）中判断输入图像的真实性。
 class UNetDiscriminatorSN(nn.Module):
     """Defines a U-Net discriminator with spectral normalization (SN)
 

@@ -15,9 +15,8 @@ import scipy.stats as st
 import cv2
 import collections
 import torchvision.transforms as transforms
-import util.util as util
+from util import util as util
 from scipy.signal import convolve2d
-
 
 # utility
 def _is_pil_image(img):

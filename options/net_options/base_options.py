@@ -37,7 +37,7 @@ class BaseOptions(Base):
 
         # set gpu ids
         if len(self.opt.gpu_ids) > 0:
-            torch.cuda.set_device(self.opt.gpu_ids[0])
+            torch.cuda.set_device(self.opt.gpu_ids[0]) # 设置当前使用的 GPU 设备
 
         args = vars(self.opt)
 

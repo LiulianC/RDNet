@@ -14,6 +14,9 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 
+
+# Mlp 类是一个 ​​多层感知机（Multilayer Perceptron, MLP）模块​​，
+# 广泛用于深度学习模型中实现特征的​​非线性变换和增强​​
 class Mlp(nn.Module):
     """ Multilayer perceptron."""
 
@@ -24,7 +27,7 @@ class Mlp(nn.Module):
         self.fc1 = nn.Linear(in_features, hidden_features)
         self.act = act_layer()
         self.fc2 = nn.Linear(hidden_features, out_features)
-        self.drop = nn.Dropout(drop)
+        self.drop = nn.Dropout(drop) # Dropout 比率（默认 0，即无丢弃）
 
     def forward(self, x):
         x = self.fc1(x)
@@ -34,13 +37,22 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
+
+
+
+
+
+# FocalModulation 是一种 ​​多尺度动态特征增强模块​​，
+# 通过层级化的卷积操作和门控机制，高效融合局部与全局上下文。
+# 其名称体现了 ​​多焦点（多尺度）​​ 和 ​​动态调制​​ 的核心设计理念，
+# 适用于需要平衡计算效率与模型性能的视觉任务。
 class FocalModulation(nn.Module):
     """ Focal Modulation
 
     Args:
         dim (int): Number of input channels.
         proj_drop (float, optional): Dropout ratio of output. Default: 0.0
-        focal_level (int): Number of focal levels
+        focal_level (int): Number of focal levels 
         focal_window (int): Focal window size at focal level 1
         focal_factor (int, default=2): Step to increase the focal window
         use_postln (bool, default=False): Whether use post-modulation layernorm
@@ -53,23 +65,24 @@ class FocalModulation(nn.Module):
         self.dim = dim
 
         # specific args for focalv3
-        self.focal_level = focal_level
-        self.focal_window = focal_window
-        self.focal_factor = focal_factor
-        self.use_postln_in_modulation = use_postln_in_modulation
+        self.focal_level = focal_level # 焦点层级数（如2层表示使用两种不同尺度的卷积核）
+        self.focal_window = focal_window # 基础卷积核大小（如7x7）
+        self.focal_factor = focal_factor # 	每层卷积核扩展步长（第k层核大小：focal_window + focal_factor*k）
+        self.use_postln_in_modulation = use_postln_in_modulation # 	是否在输出前应用层归一化
         self.normalize_modulator = normalize_modulator
 
-        self.f = nn.Linear(dim, 2*dim+(self.focal_level+1), bias=True)
-        self.h = nn.Conv2d(dim, dim, kernel_size=1, stride=1, padding=0, groups=1, bias=True)
+        self.f = nn.Linear(dim, 2*dim+(self.focal_level+1), bias=True) # 生成查询 q、初始上下文 ctx 和各层门控 gates
+        self.h = nn.Conv2d(dim, dim, kernel_size=1, stride=1, padding=0, groups=1, bias=True) # 	将融合后的上下文映射到调制空间
 
         self.act = nn.GELU()
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
-        self.focal_layers = nn.ModuleList()
+        self.focal_layers = nn.ModuleList() # 	多尺度卷积层（不同核大小的深度可分离卷积）
 
         if self.use_postln_in_modulation:
             self.ln = nn.LayerNorm(dim)
 
+        
         for k in range(self.focal_level):
             kernel_size = self.focal_factor*k + self.focal_window
             self.focal_layers.append(
@@ -82,7 +95,6 @@ class FocalModulation(nn.Module):
 
     def forward(self, x):
         """ Forward function.
-
         Args:
             x: input features with shape of (B, H, W, C)
         """
@@ -91,16 +103,23 @@ class FocalModulation(nn.Module):
         x = x.permute(0, 3, 1, 2).contiguous()
         q, ctx, gates = torch.split(x, (C, C, self.focal_level+1), 1)
         
+        # ​​多尺度上下文提取​​：对 ctx 依次进行不同尺度的卷积操作：
         ctx_all = 0
         for l in range(self.focal_level):                     
             ctx = self.focal_layers[l](ctx)
             ctx_all = ctx_all + ctx*gates[:, l:l+1]
+
+        # ​全局上下文补充​​：通过全局平均池化提取全局上下文，并与门控权重融合：
         ctx_global = self.act(ctx.mean(2, keepdim=True).mean(3, keepdim=True))
         ctx_all = ctx_all + ctx_global*gates[:,self.focal_level:]
+
         if self.normalize_modulator:
             ctx_all = ctx_all / (self.focal_level+1)
 
+        #  # 特征调制​​：将融合后的上下文 ctx_all 与查询 q 相乘，通过 self.h 调整通道维度：
         x_out = q * self.h(ctx_all)
+
+        # ​​输出归一化与投影​​：
         x_out = x_out.permute(0, 2, 3, 1).contiguous()
         if self.use_postln_in_modulation:
             x_out = self.ln(x_out)            
@@ -108,6 +127,12 @@ class FocalModulation(nn.Module):
         x_out = self.proj_drop(x_out)
         return x_out
 
+
+
+# 一种 ​​高效的特征增强模块​​，替代传统自注意力（Self-Attention）或卷积，用于视觉任务中的多尺度特征建模。
+# "Focal"​​：表示该模块采用 ​​多尺度/多焦点​​ 的上下文聚合机制，类似人类视觉的焦点切换，捕捉不同范围的局部-全局信息。
+# ​​"Modulation"​​：指 ​​动态特征调整​​，通过门控机制自适应融合多尺度特征。
+# ​​"Block"​​：表明这是一个 ​​基础网络模块​​，可堆叠构建深度模型（类似 Transformer Block）。
 class FocalModulationBlock(nn.Module):
     """ Focal Modulation Block.
 
@@ -130,30 +155,34 @@ class FocalModulationBlock(nn.Module):
                  use_layerscale=False, 
                  layerscale_value=1e-4):
         super().__init__()
+
+        # # 参数保存
         self.dim = dim
-        self.mlp_ratio = mlp_ratio
+        self.mlp_ratio = mlp_ratio # MLP隐藏层维度是输入维度的mlp_ratio倍
         self.focal_window = focal_window
         self.focal_level = focal_level
+
         self.use_postln = use_postln
         self.use_layerscale = use_layerscale
 
-        self.norm1 = norm_layer(dim)
-        self.modulation = FocalModulation(
+        # 核心模块
+        self.norm1 = norm_layer(dim)# 前置归一化
+        self.modulation = FocalModulation( # 多尺度调制模块
             dim, focal_window=self.focal_window, focal_level=self.focal_level, proj_drop=drop, 
             use_postln_in_modulation=use_postln_in_modulation, 
             normalize_modulator=normalize_modulator, 
         )            
-
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        self.norm2 = norm_layer(dim)
+        self.norm2 = norm_layer(dim) # MLP前归一化
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
+        # 残差连接与正则化
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity() # 随机深度丢弃
+        self.gamma_1 = 1.0 # LayerScale可学习参数
+        self.gamma_2 = 1.0 # LayerScale可学习参数
+
         self.H = None
         self.W = None
-
-        self.gamma_1 = 1.0
-        self.gamma_2 = 1.0
         if self.use_layerscale:
             self.gamma_1 = nn.Parameter(layerscale_value * torch.ones((dim)), requires_grad=True)
             self.gamma_2 = nn.Parameter(layerscale_value * torch.ones((dim)), requires_grad=True)
@@ -165,33 +194,40 @@ class FocalModulationBlock(nn.Module):
             x: Input feature, tensor size (B, H*W, C).
             H, W: Spatial resolution of the input feature.
         """
-        B, L, C = x.shape
-        H, W = self.H, self.W
-        assert L == H * W, "input feature has wrong size"
+        B, L, C = x.shape # 输入形状 [Batch, SeqLen, Channels]
+        H, W = self.H, self.W  # 预设的空间分辨率（如14x14）
+        # assert 是 Python 中的一个关键字，用于调试时测试条件是否为真。如果条件为假，则会引发 AssertionError 异常
+        assert L == H * W, "input feature has wrong size"  # 确保序列长度等于H*W
+        shortcut = x # 保存残差连接的原始输入
 
-        shortcut = x
-        if not self.use_postln:
-            x = self.norm1(x)
-        x = x.view(B, H, W, C)
+        # 前置归一化（若未启用Post-LN）
+        if not self.use_postln: 
+            x = self.norm1(x) # LayerNorm处理 [B, L, C]
+        x = x.view(B, H, W, C) # 将序列转换为2D特征图 # [B, H*W, C] → [B, H, W, C]
         
-        # FM
-        x = self.modulation(x).view(B, H * W, C)
-        if self.use_postln:
-            x = self.norm1(x)
+        # FM # 通过FocalModulation模块处理
+        x = self.modulation(x).view(B, H * W, C) # 输入 [B, H, W, C] →  [B, H, W, C] -> [B, H*W, C]
+        if self.use_postln: # 后置归一化（若启用Post-LN）
+            x = self.norm1(x)  # 替代前置归一化
 
-        # FFN
-        x = shortcut + self.drop_path(self.gamma_1 * x)
+        # FFN # 第一次残差连接（调制后特征 + 原始输入）
+        x = shortcut + self.drop_path(self.gamma_1 * x) # self.gamma_1初始为1或可学习的小值（LayerScale）
 
+        # 归一化与MLP处理
         if self.use_postln:
-            x = x + self.drop_path(self.gamma_2 * self.norm2(self.mlp(x)))
+            x = x + self.drop_path(self.gamma_2 * self.norm2(self.mlp(x))) # 标准前置归一化# 标准前置归一化# 第二次残差连接
         else:
             x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
 
         return x
 
+
+# BasicLayer 类是一个 ​​多阶段视觉模型的基础层级结构​​，
+# 用于整合特征变换模块（如 FocalModulationBlock）和空间下采样操作，逐步提取多尺度特征。
+# ​​"Basic"​​：表明这是网络中的一个 ​​基础构建单元​​，通常作为主干网络的阶段模块。
+# ​​"Layer"​​：指代模型的一个 ​​处理阶段​​（Stage），包含多个特征变换块（Block）和可选的层级间下采样。
 class BasicLayer(nn.Module):
     """ A basic focal modulation layer for one stage.
-
     Args:
         dim (int): Number of feature channels
         depth (int): Depths of this stage.
@@ -228,7 +264,7 @@ class BasicLayer(nn.Module):
         self.use_checkpoint = use_checkpoint
 
         # build blocks
-        self.blocks = nn.ModuleList([
+        self.blocks = nn.ModuleList([ # 通过堆叠 depth 个 FocalModulationBlock 实现连续的 ​​局部-全局特征交互​​：
             FocalModulationBlock(
                 dim=dim,
                 mlp_ratio=mlp_ratio,
@@ -244,7 +280,7 @@ class BasicLayer(nn.Module):
             for i in range(depth)])
 
         # patch merging layer
-        if downsample is not None:
+        if downsample is not None: # 通过 downsample 模块（通常为步长2的卷积或补丁合并）实现 ​​分辨率减半、通道翻倍​​。
             self.downsample = downsample(
                 patch_size=2, 
                 in_chans=dim, embed_dim=2*dim, 
@@ -252,7 +288,6 @@ class BasicLayer(nn.Module):
                 norm_layer=norm_layer, 
                 is_stem=False
             )
-
         else:
             self.downsample = None
 
@@ -260,26 +295,35 @@ class BasicLayer(nn.Module):
         """ Forward function.
 
         Args:
-            x: Input feature, tensor size (B, H*W, C).
+            x: Input feature, tensor size (B, H*W, C). 
             H, W: Spatial resolution of the input feature.
+            输入张量​​：x 形状为 [B, H*W, C]（序列化特征，类似 Vision Transformer 的 Patch 嵌入）。
         """
 
-        for blk in self.blocks:
+        for blk in self.blocks: # 将 H, W 传递给每个 FocalModulationBlock，并逐块处理输入特征。
             blk.H, blk.W = H, W
             if self.use_checkpoint:
                 x = checkpoint.checkpoint(blk, x)
             else:
                 x = blk(x)
+        
+        # 可选下采样​​：
         if self.downsample is not None:
-            x_reshaped = x.transpose(1, 2).view(x.shape[0], x.shape[-1], H, W)
-            x_down = self.downsample(x_reshaped)      
-            x_down = x_down.flatten(2).transpose(1, 2)            
-            Wh, Ww = (H + 1) // 2, (W + 1) // 2
+            x_reshaped = x.transpose(1, 2).view(x.shape[0], x.shape[-1], H, W) # 序列 → 2D 图像格式
+            x_down = self.downsample(x_reshaped)      # 卷积降采样 + 通道扩展
+            x_down = x_down.flatten(2).transpose(1, 2)            # 2D → 序列格式
+            Wh, Ww = (H + 1) // 2, (W + 1) // 2      # 新分辨率
             return x, H, W, x_down, Wh, Ww
         else:
             return x, H, W, x, H, W
 
 
+
+# ​​类名​​：PatchEmbed
+# ​​"Patch"​​：指将图像分割为若干 ​​局部块​​（如 4x4 像素的网格）。
+# ​​"Embed"​​：表示将每个块 ​​映射为低维向量​​（嵌入向量）。
+# ​​组合意义​​：​​图像块嵌入模块​​，核心功能是将图像转换为一系列可处理的嵌入向量序列，类似 Vision Transformer (ViT) 的预处理步骤。
+# ​​定位​​：视觉模型的 ​​输入预处理模块​​，负责将原始像素转换为结构化特征表示。
 class PatchEmbed(nn.Module):
     """ Image to Patch Embedding
 
@@ -293,46 +337,53 @@ class PatchEmbed(nn.Module):
     """
 
     def __init__(self, patch_size=4, in_chans=3, embed_dim=96, norm_layer=None, use_conv_embed=False, is_stem=False):
-        super().__init__()
+        super().__init__() # 若use_conv_embed=True，则采用 ​​重叠卷积​​ 替代直接分块，增强局部特征连续性
         patch_size = to_2tuple(patch_size)
-        self.patch_size = patch_size
+        self.patch_size = patch_size # 根据 patch_size 或卷积步长（如步长 2）​​降低空间分辨率​​，同时 ​​扩展通道维度​​（如 3 通道 → 96 通道）。
 
         self.in_chans = in_chans
         self.embed_dim = embed_dim
 
-        if use_conv_embed:
-            # if we choose to use conv embedding, then we treat the stem and non-stem differently
+        if use_conv_embed: # True：使用 ​​卷积实现嵌入​​（类似 ResNet 的 Stem 层），通过 kernel_size 和 stride 控制分块方式
             if is_stem:
-                kernel_size = 7; padding = 3; stride = 2
+                kernel_size = 7; padding = 3; stride = 2 # ​​Stem 模式​​（is_stem=True）：采用 7x7 大核卷积（步长 2），初始阶段快速降维。
             else:
-                kernel_size = 3; padding = 1; stride = 2
+                kernel_size = 3; padding = 1; stride = 2 # 非 Stem 模式​​：3x3 卷积（步长 2），渐进式特征提取。
             self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=kernel_size, stride=stride, padding=padding)                    
-        else:
+        
+        else:# False：直接通过 patch_size 分块（如 4x4 无重叠块），类似 ViT
             self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
 
         if norm_layer is not None:
-            self.norm = norm_layer(embed_dim)
+            self.norm = norm_layer(embed_dim) # 启用 norm_layer​​：归一化后保持相同形状。
         else:
-            self.norm = None
+            self.norm = None  # 未启用 norm_layer​​：[B, embed_dim, H', W']（如 [1, 96, 56, 56]）。
 
     def forward(self, x):
         """Forward function."""
         _, _, H, W = x.size()
         if W % self.patch_size[1] != 0:
+            # 若宽度 W 不能被 patch_size[1] 整除，则在 ​​右侧​​ 填充 0，使新宽度为 W + (patch_size[1] - W % patch_size[1])
             x = F.pad(x, (0, self.patch_size[1] - W % self.patch_size[1]))
         if H % self.patch_size[0] != 0:
+            #若高度 H 不能被 patch_size[0] 整除，则在 ​​底部​​ 填充 0，使新高度为 H + (patch_size[0] - H % patch_size[0])。
             x = F.pad(x, (0, 0, 0, self.patch_size[0] - H % self.patch_size[0]))
 
-        x = self.proj(x)  # B C Wh Ww
+        x = self.proj(x)  # B C Wh Ww 通过卷积层 (self.proj) 将图像分块并映射到嵌入空间。
         if self.norm is not None:
             Wh, Ww = x.size(2), x.size(3)
-            x = x.flatten(2).transpose(1, 2)
-            x = self.norm(x)
-            x = x.transpose(1, 2).view(-1, self.embed_dim, Wh, Ww)
-
+            x = x.flatten(2).transpose(1, 2) # 展平空间维度​​：将投影后的特征图 [B, C, H', W'] 转换为 [B, C, H'W']，再转置为 [B, H'W', C]
+            x = self.norm(x) # 在通道维度 C 上应用 norm_layer（如 LayerNorm）
+            x = x.transpose(1, 2).view(-1, self.embed_dim, Wh, Ww) # ​​恢复形状​​：转置并重塑回 [B, C, H', W']，保留空间结构。
         return x
 
 
+
+
+# ​​类名​​：FocalNet
+# ​​"Focal"​​：表明网络采用 ​​多尺度焦点调制技术​​（Focal Modulation），通过动态调整不同区域的特征重要性来高效建模长距离依赖。
+# ​​"Net"​​：表示这是一个完整的 ​​主干网络架构​​，用于图像特征提取。
+# ​​定位​​：一种基于 ​​焦点调制模块​​ 的视觉主干网络，旨在替代传统 CNN 或 Transformer，平衡计算效率与建模能力。
 class FocalNet(nn.Module):
     """ FocalNet backbone.
 
@@ -388,28 +439,30 @@ class FocalNet(nn.Module):
         self.out_indices = out_indices
         self.frozen_stages = frozen_stages
 
-        # split image into non-overlapping patches
-        self.patch_embed = PatchEmbed(
+        # split image into non-overlapping patches 
+        # 将输入图像分割为块（或通过卷积）并映射到嵌入空间，输出形状 [B, C, H', W']
+        self.patch_embed = PatchEmbed( 
             patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,
             norm_layer=norm_layer if self.patch_norm else None, 
             use_conv_embed=use_conv_embed, is_stem=True)
 
-        self.pos_drop = nn.Dropout(p=drop_rate)
+        #​​位置随机丢弃（PosDrop）
+        self.pos_drop = nn.Dropout(p=drop_rate) 
 
-        # stochastic depth
+        # stochastic depth ​​层级构建（BasicLayer）​​
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]  # stochastic depth decay rule
 
         # build layers
         self.layers = nn.ModuleList()
         for i_layer in range(self.num_layers):
-            layer = BasicLayer(
-                dim=int(embed_dim * 2 ** i_layer),
+            layer = BasicLayer( # 每层 BasicLayer类 包含多个 FocalModulationBlock
+                dim=int(embed_dim * 2 ** i_layer),# 维度逐层翻倍（embed_dim * 2**i_layer）
                 depth=depths[i_layer],
                 mlp_ratio=mlp_ratio,
                 drop=drop_rate,
                 drop_path=dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],
                 norm_layer=norm_layer,
-                downsample=PatchEmbed if (i_layer < self.num_layers - 1) else None,
+                downsample=PatchEmbed if (i_layer < self.num_layers - 1) else None,#最后一层不降采样（downsample=None），保留分辨率。
                 focal_window=focal_windows[i_layer], 
                 focal_level=focal_levels[i_layer], 
                 use_conv_embed=use_conv_embed,
@@ -431,7 +484,8 @@ class FocalNet(nn.Module):
 
         self._freeze_stages()
 
-    def _freeze_stages(self):
+    # 冻结指定阶段的参数（如 frozen_stages=2 冻结前两层的权重），用于迁移学习或部分微调
+    def _freeze_stages(self): 
         if self.frozen_stages >= 0:
             self.patch_embed.eval()
             for param in self.patch_embed.parameters():
@@ -473,23 +527,25 @@ class FocalNet(nn.Module):
 
     def forward(self, x):
         """Forward function."""
-        x_emb = self.patch_embed(x)
-        Wh, Ww = x_emb.size(2), x_emb.size(3)
+        x_emb = self.patch_embed(x) # # 分块嵌入 → [B, C, H', W']
+        Wh, Ww = x_emb.size(2), x_emb.size(3)   
 
-        x = x_emb.flatten(2).transpose(1, 2)
-        x = self.pos_drop(x)
+        x = x_emb.flatten(2).transpose(1, 2)    # 序列化为 [B, H'W', C]
+        x = self.pos_drop(x)    # # 随机丢弃
 
         outs = []
         for i in range(self.num_layers):
             layer = self.layers[i]
-            x_out, H, W, x, Wh, Ww = layer(x, Wh, Ww)            
+            x_out, H, W, x, Wh, Ww = layer(x, Wh, Ww)   # 逐层处理       
+
+            # 每层输出特征被归一化并重塑为 [B, C, H, W]，存入 outs 列表。       
             if i in self.out_indices:
-                norm_layer = getattr(self, f'norm{i}')
-                x_out = norm_layer(x_out)
-                
+                norm_layer = getattr(self, f'norm{i}') 
+                x_out = norm_layer(x_out) # 归一化并输出
                 out = x_out.view(-1, H, W, self.num_features[i]).permute(0, 3, 1, 2).contiguous()
                 outs.append(out)
-        return outs, x_emb
+        return outs, x_emb # 多尺度特征 + 初始嵌入
+
 
     def train(self, mode=True):
         """Convert the model into training mode while keep layers freezed."""
@@ -497,9 +553,15 @@ class FocalNet(nn.Module):
         self._freeze_stages()
 
 
-
+# FocalNet 模型工厂函数​​，根据指定的模型名称（如 focalnet_L_384_22k）和可选参数，
+# 快速构建预定义配置的 FocalNet 主干网络。
+# 其核心作用是 ​​统一管理不同规模的模型配置​​，简化模型实例化流程。
+# 这个函数是 ​​模型工厂​​，类似于“菜单”，根据你选择的模型名称（如 focalnet_L_384_22k），
+# 自动配置好对应的网络参数，然后组装成一个完整的 FocalNet 模型。
+# 类似于去餐厅点菜，告诉服务员你要“套餐A”，厨师就会按固定配方做菜。
 def build_focalnet(modelname, **kw):
-    assert modelname in [
+
+    assert modelname in [ # 确保 modelname 是预定义的合法名称，防止无效配置。
         'focalnet_L_384_22k', 
         'focalnet_L_384_22k_fl4', 
         'focalnet_XL_384_22k', 
@@ -507,7 +569,9 @@ def build_focalnet(modelname, **kw):
         'focalnet_H_224_22k', 
         'focalnet_H_224_22k_fl4',         
         ]
-
+    
+    # 若用户指定了 focal_levels 或 focal_windows 为单个值，
+    # 将其扩展为 4 个元素的列表（对应模型的四个阶段）。
     if 'focal_levels' in kw:
         kw['focal_levels'] = [kw['focal_levels']] * 4
 
@@ -516,12 +580,12 @@ def build_focalnet(modelname, **kw):
 
     model_para_dict = {
         'focalnet_L_384_22k': dict(
-            embed_dim=192,
-            depths=[ 2, 2, 18, 2 ],
-            focal_levels=kw.get('focal_levels', [3, 3, 3, 3]), 
-            focal_windows=kw.get('focal_windows', [5, 5, 5, 5]), 
-            use_conv_embed=True, 
-            use_postln=True, 
+            embed_dim=192, # 初始嵌入维度（逐层翻倍）。
+            depths=[ 2, 2, 18, 2 ], # 各阶段的块数（如 [2,2,18,2] 表示第三阶段有 18 个块）。
+            focal_levels=kw.get('focal_levels', [3, 3, 3, 3]),  # 各阶段的焦点级别数（控制多尺度聚合范围）。
+            focal_windows=kw.get('focal_windows', [5, 5, 5, 5]), # 各阶段的初始窗口大小（影响局部感受野）。
+            use_conv_embed=True, # 是否使用卷积嵌入（替代直接分块）。
+            use_postln=True,    # 是否在后处理中使用 LayerNorm。
             use_postln_in_modulation=False, 
             use_layerscale=True, 
             normalize_modulator=False, 
@@ -583,7 +647,7 @@ def build_focalnet(modelname, **kw):
         ),                        
     }
 
-    kw_cgf = model_para_dict[modelname]
-    kw_cgf.update(kw)
-    model = FocalNet(**kw_cgf)
+    kw_cgf = model_para_dict[modelname] # 获取预配置
+    kw_cgf.update(kw) # 合并用户自定义参数
+    model = FocalNet(**kw_cgf) # 组装模型 
     return model

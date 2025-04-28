@@ -16,3 +16,4 @@ def get_timestamp():
 
 def get_formatted_time():
     return datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+# ​​获取当前时间并格式化为字符串​​，通常用于日志记录、文件命名等场景。

@@ -5,7 +5,7 @@ from models.losses import DINOLoss
 import os
 import numpy as np
 from collections import OrderedDict
-from ema_pytorch import EMA
+# from ema_pytorch import EMA
 from models.arch.classifier import PretrainedConvNext
 import util.util as util
 import util.index as index
@@ -31,6 +31,7 @@ def tensor2im(image_tensor, imtype=np.uint8):
     return image_numpy
 
 
+# 这个 EdgeMap 类是一个 ​​基于梯度的边缘检测模块​​，继承自 PyTorch 的 nn.Module。它的核心功能是通过计算图像在水平和垂直方向的梯度幅值，生成边缘响应图（edge map）。
 class EdgeMap(nn.Module):
     def __init__(self, scale=1):
         super(EdgeMap, self).__init__()
@@ -61,6 +62,10 @@ class EdgeMap(nn.Module):
         return edge
 
 
+
+# ​​显式操作​​：边缘提取（edge_map）是可见的预处理步骤。
+# ​​隐式核心操作​​：神经网络模型对输入图像进行深度处理（如去雾、反射分离），隐藏在 forward() 方法中。
+# ​​代码结构提示​​：类名 YTMTNetBase 中的 "Net" 表明这是一个神经网络基类，需配合具体网络架构实现图像处理。
 class YTMTNetBase(BaseModel):
     def _init_optimizer(self, optimizers):
         self.optimizers = optimizers
@@ -165,6 +170,10 @@ class YTMTNetBase(BaseModel):
                 Image.fromarray(tensor2im(self.input).astype(np.uint8)).save(join(savedir, name, 'm_input.png'))
 
 
+
+
+# ClsModel 类是一个 ​​结合多任务学习与对抗训练的复杂图像分解模型​​，专门用于 ​​反射层与透射层的分离​​（如去玻璃反光、去雾）或 ​​图像增强任务​​。
+# 它继承自 YTMTNetBase，核心设计融合了 ​​预训练特征提取​​、​​生成对抗网络（GAN）​​ 和 ​​多级损失约束​​。
 class ClsModel(YTMTNetBase):
     def name(self):
         return 'ytmtnet'
@@ -175,7 +184,7 @@ class ClsModel(YTMTNetBase):
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.net_c = None
 
-    def print_network(self):
+    def print_network(self): # 网络结构打印​
         print('--------------------- Model ---------------------')
         print('##################### NetG #####################')
         networks.print_network(self.net_i)
@@ -184,13 +193,14 @@ class ClsModel(YTMTNetBase):
             networks.print_network(self.netD)
 
     def _eval(self):
-        self.net_i.eval()
-        self.net_c.eval()
+        self.net_i.eval() # net_i​​：自定义的 FullNet_NLP 网络，负责生成 ​​透射层（主体内容）​​ 和 ​​反射层（干扰成分）​​。
+        self.net_c.eval() # net_c​​：预训练的 ConvNeXt 模型（PretrainedConvNext），用于提取高层语义特征。
 
     def _train(self):
         self.net_i.train()
         self.net_c.eval()
-    def initialize(self, opt):
+
+    def initialize(self, opt):# 核心初始化​
         self.opt=opt
         BaseModel.initialize(self, opt)
 
@@ -199,24 +209,32 @@ class ClsModel(YTMTNetBase):
 
         if opt.hyper:
             self.vgg = losses.Vgg19(requires_grad=False).to(self.device)
-            in_channels += 1472
-        channels = [64, 128, 256, 512]
-        layers = [2, 2, 4, 2]
-        num_subnet = opt.num_subnet
-        self.net_c = PretrainedConvNext("convnext_small_in22k").cuda()
-        
-        self.net_c.load_state_dict(torch.load('pretrained/cls_model.pth')['icnn'])
+            in_channels += 1472 # # VGG多层级特征拼接后的通道数
 
+        channels = [64, 128, 256, 512]  # 各层通道数
+        layers = [2, 2, 4, 2]           # 各层块数
+        num_subnet = opt.num_subnet     # 子网络数量（来自配置）
+
+        # 初始化预训练特征提取网络（ConvNeXt）
+        self.net_c = PretrainedConvNext("convnext_small_in22k").cuda()
+        self.net_c.load_state_dict(torch.load('D:/gzm-RDNet/RDNet/models/pretrained/cls_model.pth')['icnn'])
+
+        # 初始化主生成器网络（FullNet_NLP）
         self.net_i = FullNet_NLP(channels, layers, num_subnet, opt.loss_col,num_classes=1000, drop_path=0,save_memory=True, inter_supv=True, head_init_scale=None, kernel_size=3).to(self.device)
     
+        # 边缘检测模块（用于辅助损失）
         self.edge_map = EdgeMap(scale=1).to(self.device)
     
+        # 训练相关初始化
         if self.isTrain:
-            self.loss_dic = losses.init_loss(opt, self.Tensor)
+            self.loss_dic = losses.init_loss(opt, self.Tensor)  # 初始化损失函数字典
+            
+            # 添加VGG感知损失
             vggloss = losses.ContentLoss()
             vggloss.initialize(losses.VGGLoss(self.vgg))
             self.loss_dic['t_vgg'] = vggloss
 
+            # 配置内容损失（多种类型可选）
             cxloss = losses.ContentLoss()
             if opt.unaligned_loss == 'vgg':
                 cxloss.initialize(losses.VGGLoss(self.vgg, weights=[0.1], indices=[opt.vgg_layer]))
@@ -229,50 +247,70 @@ class ClsModel(YTMTNetBase):
                                                 criterions=[losses.CX_loss] * 3 + [nn.L1Loss()]))
             else:
                 raise NotImplementedError
+            self.loss_dic['t_cx'] = cxloss
+            
+            # 混合精度训练配置
             self.scaler=torch.cuda.amp.GradScaler()
             with torch.autocast(device_type='cuda',dtype=torch.float16):
-                self.dinoloss=DINOLoss()
-            self.loss_dic['t_cx'] = cxloss
-        
+                self.dinoloss=DINOLoss() # 自监督对比损失
+
+            # 生成器优化器
             self.optimizer_G = torch.optim.Adam(self.net_i.parameters(),
                                                 lr=opt.lr, betas=(0.9, 0.999), weight_decay=opt.wd)
-
-
             self._init_optimizer([self.optimizer_G])
 
+        # 恢复训练检查点
         if opt.resume:
             self.load(self, opt.resume_epoch)
 
 
+    # 判别器反向传播​
     def backward_D(self):
         loss_D=[]
-        weight=self.opt.weight_loss
+        weight=self.opt.weight_loss     # 判别器反向传播​
+
+        # 启用判别器梯度
         for p in self.netD.parameters():
             p.requires_grad = True
+
+        # 多尺度判别损失计算（4个尺度）    
         for i in range(4):
             loss_D_1, pred_fake_1, pred_real_1 = self.loss_dic['gan'].get_loss(
                 self.netD, self.input, self.output_j[2*i], self.target_t)
             loss_D.append(loss_D_1*weight)
             weight+=self.opt.weight_loss
+        
+        # 合并损失并反向传播
         loss_sum=sum(loss_D)
-
         self.loss_D, self.pred_fake, self.pred_real = (loss_sum, pred_fake_1, pred_real_1)
-
         (self.loss_D * self.opt.lambda_gan).backward(retain_graph=True)
 
+
+    # 生成器损失计算​
     def get_loss(self, out_l, out_r):
+
+        # 初始化各损失累加器
         loss_G_GAN_sum=[]
         loss_icnn_pixel_sum=[]
         loss_rcnn_pixel_sum=[]
         loss_icnn_vgg_sum=[]
         weight=self.opt.weight_loss
+
+        # 遍历多级输出（loss_col控制级数）
         for i in range(self.opt.loss_col):
+
+            # 获取当前级输出（clean和reflection）
             out_r_clean=out_r[2*i]
             out_r_reflection=out_r[2*i+1]
+
+            # 非最终级的损失计算
             if i != self.opt.loss_col -1:
-                loss_G_GAN = 0
+                loss_G_GAN = 0 # 中间层不计算GAN损失
+                # 像素级L1损失
                 loss_icnn_pixel = self.loss_dic['t_pixel'].get_loss(out_r_clean, self.target_t)
+                # 反射层像素损失（加权）
                 loss_rcnn_pixel = self.loss_dic['r_pixel'].get_loss(out_r_reflection, self.target_r) * 1.5 * self.opt.r_pixel_weight
+                 # VGG感知损失
                 loss_icnn_vgg = self.loss_dic['t_vgg'].get_loss(out_r_clean, self.target_t) * self.opt.lambda_vgg
             else:
                 if self.opt.lambda_gan>0:
@@ -291,6 +329,9 @@ class ClsModel(YTMTNetBase):
             weight=weight+self.opt.weight_loss
         return sum(loss_G_GAN_sum), sum(loss_icnn_pixel_sum), sum(loss_rcnn_pixel_sum), sum(loss_icnn_vgg_sum)
 
+
+    # 生成器反向传播​
+    # 计算生成器损失（对抗损失、像素损失、VGG感知损失）
     def backward_G(self):
 
         self.loss_G_GAN,self.loss_icnn_pixel, self.loss_rcnn_pixel, \
@@ -305,7 +346,7 @@ class ClsModel(YTMTNetBase):
         self.scaler.scale(self.loss_G).backward()
 
 
-
+    #  超列特征生成​    # 通过VGG网络提取多层级特征，并进行上采样以匹配输入图像的大小
     def hyper_column(self, input_img):
         hypercolumn = self.vgg(input_img)
         _, C, H, W = input_img.shape
@@ -316,21 +357,31 @@ class ClsModel(YTMTNetBase):
         input_i = torch.cat(input_i, dim=1)
         return input_i
 
+    # 前向传播
     def forward(self):
         # without edge
         
         self.output_j=[]
         input_i = self.input
+
+        # 可选：生成超列特征
         if self.vgg is not None:
             input_i = self.hyper_column(input_i)
+
+        # 用net_c提取特征（不计算梯度）
         with torch.no_grad():
             ipt = self.net_c(input_i)
+
+         # 主网络生成输出
         output_i, output_j = self.net_i(input_i,ipt,prompt=True)
         self.output_i = output_i
+
+        # 整理多级输出（clean和reflection交替存放）
         for i in range(self.opt.loss_col):
             out_reflection, out_clean = output_j[i][:, :3, ...], output_j[i][:, 3:, ...]
             self.output_j.append(out_clean) 
             self.output_j.append(out_reflection) 
+
         return self.output_i, self.output_j
 
 
@@ -351,12 +402,14 @@ class ClsModel(YTMTNetBase):
             self.output_j.append(out_reflection)
         return self.output_i, self.output_j
 
+
     def optimize_parameters(self):
         self._train()
         self.forward()
         self.optimizer_G.zero_grad()
         self.backward_G()
         self.optimizer_G.step()
+
 
     def return_output(self):
         output_clean = self.output_j[1]
@@ -365,37 +418,54 @@ class ClsModel(YTMTNetBase):
         output_reflection = tensor2im(output_reflection).astype(np.uint8)
         input=tensor2im(self.input)
         return output_clean,output_reflection,input
+    
+
+    # 排斥损失（关键创新点）​
     def exclusion_loss(self, img_T, img_R, level=3, eps=1e-6):
         loss_gra=[]
         weight=0.25
+
+        # # 多层级梯度互斥计算
         for i in range(4):
             grad_x_loss = []
             grad_y_loss = []
             img_T=self.output_j[2*i]
             img_R=self.output_j[2*i+1]
+
+            # 下采样循环（level控制）
             for l in range(level):
+
+                # 计算梯度
                 grad_x_T, grad_y_T = self.compute_grad(img_T)
                 grad_x_R, grad_y_R = self.compute_grad(img_R)
 
+                # 自适应权重平衡
                 alphax = (2.0 * torch.mean(torch.abs(grad_x_T))) / (torch.mean(torch.abs(grad_x_R)) + eps)
                 alphay = (2.0 * torch.mean(torch.abs(grad_y_T))) / (torch.mean(torch.abs(grad_y_R)) + eps)
 
+                 # 梯度归一化（sigmoid转tanh）
                 gradx1_s = (torch.sigmoid(grad_x_T) * 2) - 1  # mul 2 minus 1 is to change sigmoid into tanh
                 grady1_s = (torch.sigmoid(grad_y_T) * 2) - 1
                 gradx2_s = (torch.sigmoid(grad_x_R * alphax) * 2) - 1
                 grady2_s = (torch.sigmoid(grad_y_R * alphay) * 2) - 1
 
+                # 互斥损失计算
                 grad_x_loss.append(((torch.mean(torch.mul(gradx1_s.pow(2), gradx2_s.pow(2)))) + eps) ** 0.25)
                 grad_y_loss.append(((torch.mean(torch.mul(grady1_s.pow(2), grady2_s.pow(2)))) + eps) ** 0.25)
 
+                 # 下采样准备下一轮
                 img_T = F.interpolate(img_T, scale_factor=0.5, mode='bilinear')
                 img_R = F.interpolate(img_R, scale_factor=0.5, mode='bilinear')
+
+            # 层级损失加权
             loss_gradxy = torch.sum(sum(grad_x_loss) / 3) + torch.sum(sum(grad_y_loss) / 3)
             loss_gra.append(loss_gradxy*weight)
             weight+=0.25
 
 
         return sum(loss_gra) / 2
+
+
 
     def contain_loss(self, img_T, img_R, img_I, eps=1e-6):
         pix_num = np.prod(img_I.shape)
@@ -437,6 +507,11 @@ class ClsModel(YTMTNetBase):
             })
 
         return state_dict
+    
+
+
+# AvgPool2d 类是一个 ​​自定义的自适应平均池化层​​，设计用于在 ​​动态输入尺寸​​ 场景下高效工作
+# ​面向动态分辨率场景优化​​ 的自适应池化层，通过动态核调整+积分图技巧，在 ​​大核池化​​ 和 ​​多尺度应用​​ 中展现出比标准实现更高的效率。常用于计算机视觉中对分辨率敏感的模型（如 GAN、超分辨率）
 class AvgPool2d(nn.Module):
     def __init__(self, kernel_size=None, base_size=None, auto_pad=True, fast_imp=False, train_size=None):
         super().__init__()
@@ -457,6 +532,8 @@ class AvgPool2d(nn.Module):
         )
 
     def forward(self, x):
+
+        # 动态计算池化核 (forward)​
         if self.kernel_size is None and self.base_size:
             train_size = self.train_size
             if isinstance(self.base_size, int):

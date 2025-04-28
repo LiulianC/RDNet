@@ -2,7 +2,7 @@ import os
 import torch
 import util.util as util
 
-
+# BaseModel 类是一个 ​​深度学习模型的基础抽象类​​，通常用于 ​​生成对抗网络（GAN）​​ 或 ​​其他复杂模型训练框架​​（如 PyTorch 项目）
 class BaseModel:
     def name(self):
         return self.__class__.__name__.lower()
@@ -34,7 +34,7 @@ class BaseModel:
         pass
 
     def get_image_paths(self):
-        pass
+        pass # 这是一个空方法（只有 pass）
 
     def optimize_parameters(self):
         pass

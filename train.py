@@ -3,14 +3,14 @@ from os.path import join
 
 import torch.backends.cudnn as cudnn
 import faulthandler
-import data.sirs_dataset as datasets
+import data.dataset_sir as datasets
 import util.util as util
 from data.image_folder import read_fns
 from engine import Engine
 from options.net_options.train_options import TrainOptions
 from tools import mutils
 import data.new_dataset as datasets
-import wandb
+# import wandb
 faulthandler.enable()
 opt = TrainOptions().parse()
 cudnn.benchmark = True
@@ -33,10 +33,11 @@ if opt.debug:
     opt.no_flip = True
 
 
-datadir = os.path.join(os.path.expanduser('~'), '/opt/datasets/sirs')
-datadir_syn = join(datadir, 'train/VOCdevkit/VOC2012/PNGImages')
-datadir_real = join(datadir, 'train/real')
-datadir_nature = join(datadir, 'train/nature')
+# datadir = os.path.join(os.path.expanduser('~'), '/opt/datasets/sirs')
+# datadir_syn = join(datadir, 'train/VOCdevkit/VOC2012/PNGImages')
+# datadir_real = join(datadir, 'train/real')
+# datadir_nature = join(datadir, 'train/nature')
+# datadir_syn = './dataset/VOC2012/PNGImages'
 
 train_dataset = datasets.DSRDataset(
     datadir_syn, read_fns('data/VOC2012_224_train_png.txt'), size=opt.max_dataset_size, enable_transforms=True)
