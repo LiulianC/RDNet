@@ -93,10 +93,20 @@ class ReverseFunction(torch.autograd.Function):
         gx_right, g0_right, g1_right, g2_right, g3_right = grad_outputs
         (x, c0, c1, c2, c3) = detach_and_grad((x, c0, c1, c2, c3))
 
+        # pytorch2.3
+        # with torch.enable_grad(), \
+        #   torch.random.fork_rng(devices=ctx.gpu_devices, enabled=ctx.preserve_rng_state), \
+        #       torch.cuda.amp.autocast(**ctx.gpu_autocast_kwargs), \
+        #           torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):
+
+        # pytorch2.4
         with torch.enable_grad(), \
             torch.random.fork_rng(devices=ctx.gpu_devices, enabled=ctx.preserve_rng_state), \
-            torch.cuda.amp.autocast(**ctx.gpu_autocast_kwargs), \
-            torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):
+                torch.amp.autocast(device_type='cuda', **ctx.gpu_autocast_kwargs),\
+                    torch.amp.autocast(device_type='cpu', **ctx.cpu_autocast_kwargs):
+            
+
+
             
             g3_up = g3_right
             g3_left = g3_up*alpha3 ##shortcut

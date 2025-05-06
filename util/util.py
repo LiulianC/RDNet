@@ -150,34 +150,36 @@ def get_visual(writer,iteration,imgs):
     #writer.add_image('input', imgs[2],iteration)
 
 
+
+# ​核心目的​​：用于​​跟踪多个指标（如损失、准确率）的平均值​​，支持动态添加新指标。
 class AverageMeters(object):
     def __init__(self, dic=None, total_num=None):
         self.dic = dic or {}
         # self.total_num = total_num
         self.total_num = total_num or {}
 
-    def update(self, new_dic):
+    def update(self, new_dic): # 更新指标 
         for key in new_dic:
-            if not key in self.dic:
-                self.dic[key] = new_dic[key]
+            if not key in self.dic:# 若指标不存在，初始化其总和和计数。
+                self.dic[key] = new_dic[key] # 初始化新指标
                 self.total_num[key] = 1
             else:
-                self.dic[key] += new_dic[key]
+                self.dic[key] += new_dic[key]  # 累加已有指标
                 self.total_num[key] += 1
         # self.total_num += 1
 
-    def __getitem__(self, key):
-        return self.dic[key] / self.total_num[key]
+    def __getitem__(self, key): # 获取平均值 
+        return self.dic[key] / self.total_num[key] # avg_meters['loss1'] → 返回 loss1 的历史平均值。
 
-    def __str__(self):
+    def __str__(self): # 格式化输出 
         keys = sorted(self.keys())
         res = ''
         for key in keys:
-            res += (key + ': %.4f' % self[key] + ' | ')
+            res += (key + ': %.4f' % self[key] + ' | ')  # 格式化为 "loss1: 0.1234 | loss2: 0.5678"
         return res
 
     def keys(self):
-        return self.dic.keys()
+        return self.dic.keys() # 返回当前跟踪的指标名称列表（如 ['loss1', 'loss2']
 
 
 def write_loss(writer, prefix, avg_meters, iteration):

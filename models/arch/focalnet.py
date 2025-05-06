@@ -82,7 +82,7 @@ class FocalModulation(nn.Module):
         if self.use_postln_in_modulation:
             self.ln = nn.LayerNorm(dim)
 
-        
+        # 这是多尺度卷积
         for k in range(self.focal_level):
             kernel_size = self.focal_factor*k + self.focal_window
             self.focal_layers.append(
@@ -99,32 +99,42 @@ class FocalModulation(nn.Module):
             x: input features with shape of (B, H, W, C)
         """
         B, nH, nW, C = x.shape
-        x = self.f(x)
-        x = x.permute(0, 3, 1, 2).contiguous()
+        x = self.f(x) # 通过线性层生成多通道 生成查询 q、初始上下文 ctx 和各层门控 gates的通道
+        x = x.permute(0, 3, 1, 2).contiguous() # (N,H,W,C) -> (N, C, H, W).contiguous()​​ 确保张量在内存中连续存储
+        
         q, ctx, gates = torch.split(x, (C, C, self.focal_level+1), 1)
+        # 输入 x 的形状​​：假设为 (B, C_total, H, W)，其中 C_total = C + C + (self.focal_level+1)。
+        # q：形状 (B, C, H, W)，表示查询（Query）特征。通过线性变换从输入中提取 ​​与位置强相关​​ 的特征
+        # ctx：形状 (B, C, H, W)，表示上下文（Context）特征。通过后续的 ​​多尺度卷积​​ 和 ​​门控融合​​ 提取上下文
+        # gates：形状 (B, self.focal_level+1, H, W)，表示多焦点级别的门控权重。动态调节不同尺度特征的贡献权重
+        # ​尽管 q、ctx、gates 来自x经过同一线性层映射出来的三个区域，但模型可以通过反向传播自动学习如何将输入特征分解为三个功能不同的部分。
         
         # ​​多尺度上下文提取​​：对 ctx 依次进行不同尺度的卷积操作：
         ctx_all = 0
-        for l in range(self.focal_level):                     
-            ctx = self.focal_layers[l](ctx)
-            ctx_all = ctx_all + ctx*gates[:, l:l+1]
+        for l in range(self.focal_level):  # # 焦点层级数（如2层表示使用两种不同尺度的卷积核）            
+            ctx = self.focal_layers[l](ctx) # 送入多尺度卷积 通道数不变
+            # gates[:, l:l+1] 选的是第l时候的gates，是形状为 [B, 1, H, W] 的权重张量，用于空间自适应的加权。
+            # 若使用 gates[:, l]（形状 [B, H, W]），其维度与 ctx ​​无法直接对齐
+            ctx_all = ctx_all + ctx*gates[:, l:l+1]  
 
         # ​全局上下文补充​​：通过全局平均池化提取全局上下文，并与门控权重融合：
-        ctx_global = self.act(ctx.mean(2, keepdim=True).mean(3, keepdim=True))
+        ctx_global = self.act(ctx.mean(2, keepdim=True).mean(3, keepdim=True)) # [B, C, H, W] → [B, C, 1, W] -> [B, C, 1, 1] 全局平均池化
+        # gates最后一个通道的维度（形状 [B, 1, H, W]）
         ctx_all = ctx_all + ctx_global*gates[:,self.focal_level:]
 
         if self.normalize_modulator:
-            ctx_all = ctx_all / (self.focal_level+1)
+            ctx_all = ctx_all / (self.focal_level+1) # 除以这么多次是因为之前加了这么多次
 
-        #  # 特征调制​​：将融合后的上下文 ctx_all 与查询 q 相乘，通过 self.h 调整通道维度：
+        #  # 特征调制​​：将融合后的上下文 ctx_all 与查询 q 相乘，通过 self.h（1*1卷积） 调整q与ctx通道维度相等：
+        # 若 modulation 某位置通道值 > 1 → 增强 q 对应位置的响应（重要特征）。
         x_out = q * self.h(ctx_all)
 
         # ​​输出归一化与投影​​：
-        x_out = x_out.permute(0, 2, 3, 1).contiguous()
+        x_out = x_out.permute(0, 2, 3, 1).contiguous() #（B,C,H,W）->（B,H,W,C）
         if self.use_postln_in_modulation:
-            x_out = self.ln(x_out)            
-        x_out = self.proj(x_out)
-        x_out = self.proj_drop(x_out)
+            x_out = self.ln(x_out)   # 归一化     
+        x_out = self.proj(x_out)    # 线性层调整通道数
+        x_out = self.proj_drop(x_out) # 随机丢弃 在前向传播时，对投影层（self.proj）的输出以概率 proj_drop 随机置零部分神经元，缓解过拟合
         return x_out
 
 
@@ -177,7 +187,7 @@ class FocalModulationBlock(nn.Module):
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
         # 残差连接与正则化
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity() # 随机深度丢弃
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity() # DropPath随机深度丢弃;nn.Identity()是输入什么就输出什么，不会改变数据的形状或数值。这有助于保持计算图的完整性，同时允许在某些情况下灵活地启用或禁用某些层
         self.gamma_1 = 1.0 # LayerScale可学习参数
         self.gamma_2 = 1.0 # LayerScale可学习参数
 
@@ -195,12 +205,14 @@ class FocalModulationBlock(nn.Module):
             H, W: Spatial resolution of the input feature.
         """
         B, L, C = x.shape # 输入形状 [Batch, SeqLen, Channels]
-        H, W = self.H, self.W  # 预设的空间分辨率（如14x14）
+        H, W = self.H, self.W  # 预设的空间分辨率（如14x14） 调用时通过blk.H和blk.W传入,H W是本模块的一个属性
         # assert 是 Python 中的一个关键字，用于调试时测试条件是否为真。如果条件为假，则会引发 AssertionError 异常
         assert L == H * W, "input feature has wrong size"  # 确保序列长度等于H*W
         shortcut = x # 保存残差连接的原始输入
 
         # 前置归一化（若未启用Post-LN）
+        # use_postln=False（默认）​​: 使用 ​​前置归一化（Pre-LN）​​，即先对输入进行归一化，再进行调制（Modulation）或 MLP 操作。
+        # ​use_postln=True​​: 使用 ​​后置归一化（Post-LN）​​，即先进行调制或 MLP 操作，再对结果进行归一化，并与残差连接相加。
         if not self.use_postln: 
             x = self.norm1(x) # LayerNorm处理 [B, L, C]
         x = x.view(B, H, W, C) # 将序列转换为2D特征图 # [B, H*W, C] → [B, H, W, C]
@@ -218,7 +230,6 @@ class FocalModulationBlock(nn.Module):
             x = x + self.drop_path(self.gamma_2 * self.norm2(self.mlp(x))) # 标准前置归一化# 标准前置归一化# 第二次残差连接
         else:
             x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
-
         return x
 
 
@@ -301,11 +312,12 @@ class BasicLayer(nn.Module):
         """
 
         for blk in self.blocks: # 将 H, W 传递给每个 FocalModulationBlock，并逐块处理输入特征。
-            blk.H, blk.W = H, W
-            if self.use_checkpoint:
+            blk.H, blk.W = H, W # 将当前的​​特征图尺寸​​（高度 H 和宽度 W）传递给每个块（如 FocalModulationBlock）
+            if self.use_checkpoint: # 启用 ​​梯度检查点技术 训练时​​：前向传播中不保留中间激活值，反向传播时重新计算这些值。 ​测试时​​：无影响，等价于直接调用 blk(x)。
                 x = checkpoint.checkpoint(blk, x)
             else:
-                x = blk(x)
+                x = blk(x) # 若未启用检查点，直接执行块的前向传播。
+                # 循环处理x这么多次 有什么用吗？
         
         # 可选下采样​​：
         if self.downsample is not None:
@@ -324,13 +336,15 @@ class BasicLayer(nn.Module):
 # ​​"Embed"​​：表示将每个块 ​​映射为低维向量​​（嵌入向量）。
 # ​​组合意义​​：​​图像块嵌入模块​​，核心功能是将图像转换为一系列可处理的嵌入向量序列，类似 Vision Transformer (ViT) 的预处理步骤。
 # ​​定位​​：视觉模型的 ​​输入预处理模块​​，负责将原始像素转换为结构化特征表示。
+
+# 分块是通过卷积后通道数增加 而HW面积减少来实现的
 class PatchEmbed(nn.Module):
     """ Image to Patch Embedding
 
     Args:
         patch_size (int): Patch token size. Default: 4.
         in_chans (int): Number of input image channels. Default: 3.
-        embed_dim (int): Number of linear projection output channels. Default: 96.
+        embed_dim (int): Number of linear projection output channels. Default: 96. 线性投影输出通道数（维度）
         norm_layer (nn.Module, optional): Normalization layer. Default: None
         use_conv_embed (bool): Whether use overlapped convolution for patch embedding. Default: False
         is_stem (bool): Is the stem block or not. 
@@ -345,7 +359,7 @@ class PatchEmbed(nn.Module):
         self.embed_dim = embed_dim
 
         if use_conv_embed: # True：使用 ​​卷积实现嵌入​​（类似 ResNet 的 Stem 层），通过 kernel_size 和 stride 控制分块方式
-            if is_stem:
+            if is_stem: # Stem 模式位于网络的最前端（即“茎干”位置，故称 Stem）快速降低输入图像的分辨率，​​ 保留局部信息​​，为后续的深层卷积或 Transformer 块提供低分辨率、高通道数的输入
                 kernel_size = 7; padding = 3; stride = 2 # ​​Stem 模式​​（is_stem=True）：采用 7x7 大核卷积（步长 2），初始阶段快速降维。
             else:
                 kernel_size = 3; padding = 1; stride = 2 # 非 Stem 模式​​：3x3 卷积（步长 2），渐进式特征提取。
@@ -372,6 +386,7 @@ class PatchEmbed(nn.Module):
         x = self.proj(x)  # B C Wh Ww 通过卷积层 (self.proj) 将图像分块并映射到嵌入空间。
         if self.norm is not None:
             Wh, Ww = x.size(2), x.size(3)
+            # 从第 2 个维度（索引从 0 开始）开始展平，即保留前两个维度（batch_size 和 channels），将后两个维度（height 和 width）合并为一个维度。
             x = x.flatten(2).transpose(1, 2) # 展平空间维度​​：将投影后的特征图 [B, C, H', W'] 转换为 [B, C, H'W']，再转置为 [B, H'W', C]
             x = self.norm(x) # 在通道维度 C 上应用 norm_layer（如 LayerNorm）
             x = x.transpose(1, 2).view(-1, self.embed_dim, Wh, Ww) # ​​恢复形状​​：转置并重塑回 [B, C, H', W']，保留空间结构。
@@ -388,24 +403,22 @@ class FocalNet(nn.Module):
     """ FocalNet backbone.
 
     Args:
-        pretrain_img_size (int): Input image size for training the pretrained model,
-            used in absolute postion embedding. Default 224.
-        patch_size (int | tuple(int)): Patch size. Default: 4.
-        in_chans (int): Number of input image channels. Default: 3.
-        embed_dim (int): Number of linear projection output channels. Default: 96.
-        depths (tuple[int]): Depths of each Swin Transformer stage.
-        mlp_ratio (float): Ratio of mlp hidden dim to embedding dim. Default: 4.
-        drop_rate (float): Dropout rate.
-        drop_path_rate (float): Stochastic depth rate. Default: 0.2.
-        norm_layer (nn.Module): Normalization layer. Default: nn.LayerNorm.
-        patch_norm (bool): If True, add normalization after patch embedding. Default: True.
-        out_indices (Sequence[int]): Output from which stages.
-        frozen_stages (int): Stages to be frozen (stop grad and set eval mode).
-            -1 means not freezing any parameters.
-        focal_levels (Sequence[int]): Number of focal levels at four stages
-        focal_windows (Sequence[int]): Focal window sizes at first focal level at four stages
-        use_conv_embed (bool): Whether use overlapped convolution for patch embedding
-        use_checkpoint (bool): Whether to use checkpointing to save memory. Default: False.
+        pretrain_img_size (int):        预训练模型的输入图像尺寸（用于绝对位置编码）. Default 224.
+        patch_size (int | tuple(int)):  图像分块大小. Default: 4.
+        in_chans (int):                 输入图像通道数. Default: 3.
+        embed_dim (int):                线性投影输出通道数. Default: 96.
+        depths (tuple[int]):            Swin Transformer各阶段的层数.
+        mlp_ratio (float):              MLP隐藏层维度与嵌入维度的比值. Default: 4.
+        drop_rate (float):              普通Dropout概率.
+        drop_path_rate (float):         随机深度丢弃率 Default: 0.2.
+        norm_layer (nn.Module):         归一化层类型. Default: nn.LayerNorm.
+        patch_norm (bool):              是否在分块嵌入后添加归一化. Default: True.
+        out_indices (Sequence[int]):    指定输出哪些阶段的特征.
+        frozen_stages (int):            冻结训练的阶段数（-1表示不冻结）.
+        focal_levels (Sequence[int]):   四阶段中每阶段的多焦点层级数
+        focal_windows (Sequence[int]):  四阶段中首层焦点窗口大小
+        use_conv_embed (bool):          是否使用重叠卷积进行分块嵌入
+        use_checkpoint (bool):          是否使用梯度检查点节省显存. Default: False.
     """
 
     def __init__(self,
@@ -440,13 +453,15 @@ class FocalNet(nn.Module):
         self.frozen_stages = frozen_stages
 
         # split image into non-overlapping patches 
-        # 将输入图像分割为块（或通过卷积）并映射到嵌入空间，输出形状 [B, C, H', W']
+        # 将输入图像分割为块 在通道堆叠，输出形状 [B, C' , H', W']
         self.patch_embed = PatchEmbed( 
             patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,
             norm_layer=norm_layer if self.patch_norm else None, 
             use_conv_embed=use_conv_embed, is_stem=True)
 
-        #​​位置随机丢弃（PosDrop）
+        #​ ​位置随机丢弃（PosDrop）
+        # 每个输入张量的元素（或神经元输出）以概率 p 被​​独立地置为0​​，否则保留原值
+        # 未被丢弃的元素会按 1/(1-p) 放大（训练阶段），以保持训练和测试时的总激活强度一致。
         self.pos_drop = nn.Dropout(p=drop_rate) 
 
         # stochastic depth ​​层级构建（BasicLayer）​​
@@ -473,6 +488,7 @@ class FocalNet(nn.Module):
                 use_checkpoint=use_checkpoint)
             self.layers.append(layer)
 
+        # num_features 是一个列表
         num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
         self.num_features = num_features
 
@@ -527,24 +543,26 @@ class FocalNet(nn.Module):
 
     def forward(self, x):
         """Forward function."""
-        x_emb = self.patch_embed(x) # # 分块嵌入 → [B, C, H', W']
+        x_emb = self.patch_embed(x) # # 分块嵌入 → [B, C', H', W']
         Wh, Ww = x_emb.size(2), x_emb.size(3)   
 
         x = x_emb.flatten(2).transpose(1, 2)    # 序列化为 [B, H'W', C]
         x = self.pos_drop(x)    # # 随机丢弃
 
+        # 每层 BasicLayer类 包含多个 FocalModulationBlock，通道数逐层翻倍
         outs = []
         for i in range(self.num_layers):
             layer = self.layers[i]
             x_out, H, W, x, Wh, Ww = layer(x, Wh, Ww)   # 逐层处理       
 
-            # 每层输出特征被归一化并重塑为 [B, C, H, W]，存入 outs 列表。       
-            if i in self.out_indices:
+            if i in self.out_indices: 
+            # 在模型初始化时，通过以下代码为每个输出阶段添加归一化层    
                 norm_layer = getattr(self, f'norm{i}') 
                 x_out = norm_layer(x_out) # 归一化并输出
+            # 每层输出特征被归一化并重塑为 [B, C, H, W]，存入 outs 列表。                  
                 out = x_out.view(-1, H, W, self.num_features[i]).permute(0, 3, 1, 2).contiguous()
                 outs.append(out)
-        return outs, x_emb # 多尺度特征 + 初始嵌入
+        return outs, x_emb # 多尺度特征 + 初始块
 
 
     def train(self, mode=True):
@@ -651,3 +669,72 @@ def build_focalnet(modelname, **kw):
     kw_cgf.update(kw) # 合并用户自定义参数
     model = FocalNet(**kw_cgf) # 组装模型 
     return model
+
+
+# [FocalNet 整体架构]
+# Input (B, 3, H, W)
+# ├─ PatchEmbed ───▶ [B, C, H/4, W/4] → x_emb
+# │   (4x4卷积嵌入，步长4)
+# │
+# └─ 分层处理 (共num_layers个阶段)
+#    ├─ Stage 0 (dim=C, 分辨率H/4×W/4)
+#    │   ├─ BasicLayer
+#    │   │   ├─ ×depth[0] FocalModulationBlock （depth是多少 每个layer不一样 精炼特征）
+#    │   │   │   ├─ PreNorm
+#    │   │   │   ├─ FocalModulation (含 focal_level 级卷积)
+#    │   │   │   │   ├─ 线性投影 → q/ctx/gates
+#    │   │   │   │   ├─ 多尺度卷积堆 (核尺寸: focal_window + k*focal_factor)
+#    │   │   │   │   └─ 门控加权融合
+#    │   │   │   ├─ MLP扩展
+#    │   │   │   └─ 残差连接×2
+#    │   │   ├─ ×depth[1] FocalModulationBlock
+#    │   │   │   ├─ PreNorm
+#    │   │   │   ├─ FocalModulation (含 focal_level 级卷积)
+#    │   │   │   │   ├─ 线性投影 → q/ctx/gates
+#    │   │   │   │   ├─ 多尺度卷积堆 (核尺寸: focal_window + k*focal_factor)
+#    │   │   │   │   └─ 门控加权融合
+#    │   │   │   ├─ MLP扩展
+#    │   │   │   └─ 残差连接×2
+#    │   │   ├─ ×depth[2] FocalModulationBlock
+#    │   │   │   ├─ PreNorm
+#    │   │   │   ├─ FocalModulation (含 focal_level 级卷积)
+#    │   │   │   │   ├─ 线性投影 → q/ctx/gates
+#    │   │   │   │   ├─ 多尺度卷积堆 (核尺寸: focal_window + k*focal_factor)
+#    │   │   │   │   └─ 门控加权融合
+#    │   │   │   ├─ MLP扩展
+#    │   │   │   └─ 残差连接×2
+#    │   │   ├─ ×depth[3] FocalModulationBlock
+#    │   │   │   ├─ PreNorm
+#    │   │   │   ├─ FocalModulation (含 focal_level 级卷积)
+#    │   │   │   │   ├─ 线性投影 → q/ctx/gates
+#    │   │   │   │   ├─ 多尺度卷积堆 (核尺寸: focal_window + k*focal_factor)
+#    │   │   │   │   └─ 门控加权融合
+#    │   │   │   ├─ MLP扩展
+#    │   │   │   └─ 残差连接×2
+#    │   │   └─ 2x下采样 → [B, 2C, H/8, W/8]
+#    │   └─ 输出归一化 (若在out_indices)
+#    │
+#    ├─ Stage 1 (dim=2C, 分辨率H/8×W/8)
+#    │   ┌─ 结构同上，深度depth[1]，焦点窗口调整...
+#    │
+#    └─ Stage N (dim=2^N*C, 分辨率H/(4 * 2^N)×W/(4 * 2^N))
+#        └─ 无下采样保持最终分辨率
+
+# Outputs:
+# ├─ outs: 多尺度特征列表 [(B, C_i, H_i, W_i)] 
+# └─ x_emb: 初始嵌入特征
+
+# 每Stage分辨率减半（H/4 → H/8 → ...）
+# 每Stage通道数翻倍（C → 2C → 4C...）
+
+# FocalModulationBlock的q ctx gates是什么？
+# 输入 x 的形状​​：假设为 (B, C_total, H, W)，其中 C_total = C + C + (self.focal_level+1)。
+# q：形状 (B, C, H, W)，表示查询（Query）特征。通过线性变换从输入中提取 ​​与位置强相关​​ 的特征
+# ctx：形状 (B, C, H, W)，表示上下文（Context）特征。通过后续的 ​​多尺度卷积​​ 和 ​​门控融合​​ 提取上下文
+# gates：形状 (B, self.focal_level+1, H, W)，表示多焦点级别的门控权重。动态调节不同尺度特征的贡献权重
+# ​尽管 q、ctx、gates 来自x经过同一线性层映射出来的三个区域，但模型可以通过反向传播自动学习如何将输入特征分解为三个功能不同的部分。
+   
+
+# debug搞清网络行为
+
+# 每个模块清楚梳理 每个类之间的关系网络 每个类的输入输出size 一些关键操作的意义

@@ -2,3 +2,11 @@ dataset/**
 results/**
 experiment/**
 models/pretrained/**
+__pycache__/**
+.idea/**
+.vscode/**
+models/__pycache__/**
+models/arch/__pycache__/**
+options/__pycache__/**
+tools/__pycache__/**
+data/__pycache__/**

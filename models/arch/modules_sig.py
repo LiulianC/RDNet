@@ -78,11 +78,13 @@ class SimpleGate(nn.Module):
 
 # "NAF"​​：通常为 ​​Non-linear Activation Free​​ 的缩写，表明该模块通过 ​​乘法操作​​ 替代传统激活函数（如ReLU），减少显式非线性层的使用。
 # ​​"Block"​​：表示这是一个基础网络模块，可堆叠构建深层网络。
+# NAFNET.py 也有这个网络 但是用的是这里的NAFBlock
+# NAFBlock 是一个 ​​高效多组件残差块​​，通过 ​​深度可分离卷积 + 门控 + 注意力​​ 的组合，在减少参数量的同时实现高性能特征提取。其设计充分借鉴了 Transformer 的 FFN 结构和 ConvNeXt 的层缩放技术，适用于对细节敏感且需实时计算的任务
 class NAFBlock(nn.Module):
     def __init__(self, dim, expand_dim, out_dim, kernel_size=3, layer_scale_init_value=1e-6, drop_path=0.):
         super().__init__()
         drop_out_rate = 0. 
-        dw_channel = expand_dim
+        dw_channel = expand_dim # dw​​ 是 ​​Depthwise​​ 的缩写，对应深度可分离卷积
         # 1x1升维
         self.conv1 = nn.Conv2d(in_channels=dim, out_channels=dw_channel, kernel_size=1, padding=0, stride=1, groups=1, bias=True)
         # 深度可分离卷积
@@ -99,9 +101,10 @@ class NAFBlock(nn.Module):
         )
 
         # SimpleGate
-        self.sg = SimpleGate() # 通道分割与乘积
+        self.sg = SimpleGate() # 通道分割与乘积 # 将输入张量沿通道维度（dim=1）均分为两部分 x1 和 x2，并对它们进行 ​​逐元素相乘​​
 
         ffn_channel = expand_dim
+
         # 前馈分支
         self.conv4 = nn.Conv2d(in_channels=dim, out_channels=ffn_channel, kernel_size=1, padding=0, stride=1, groups=1, bias=True) # 1x1升维
         self.conv5 = nn.Conv2d(in_channels=ffn_channel // 2, out_channels=out_dim, kernel_size=1, padding=0, stride=1, groups=1, bias=True) # 1x1调整输出维度
@@ -109,7 +112,7 @@ class NAFBlock(nn.Module):
 
         self.norm1 = LayerNorm2d(dim) # 通道归一化
         self.norm2 = LayerNorm2d(dim)
-        self.dropout1 = nn.Dropout(drop_out_rate) if drop_out_rate > 0. else nn.Identity() # 随机丢弃 
+        self.dropout1 = nn.Dropout(drop_out_rate) if drop_out_rate > 0. else nn.Identity() # 随机丢弃 Identity是保持原样的意思
         self.dropout2 = nn.Dropout(drop_out_rate) if drop_out_rate > 0. else nn.Identity()
 
         # 层缩放参数
@@ -118,12 +121,10 @@ class NAFBlock(nn.Module):
 
     def forward(self, inp):
         x = inp
-
         x = self.norm1(x)  # 归一化
-
         x = self.conv1(x)   # 升维 [B, dim, H, W] → [B, expand_dim, H, W]
         x = self.conv2(x)   # 深度可分离卷积（空间特征提取）
-        x = self.sg(x)      # 通道分割 → [B, expand_dim//2, H, W] ×2，乘积后输出同维度
+        x = self.sg(x)      # 通道分割 → [B, expand_dim//2, H, W] ×2，相互乘积后输出同维度 能做到把细节更突出 把不重要的削弱了
         x = x * self.sca(x) # 通道注意力加权
         x = self.conv3(x)   #  降维至原通道数 [B, dim, H, W]
 
@@ -217,7 +218,7 @@ class ConvNextBlock(nn.Module):
         self.pwconv1 = nn.Linear(in_channel, hidden_dim) # 升维# pointwise/1x1 convs, implemented with linear layers
         self.act = nn.GELU()
         self.pwconv2 = nn.Linear(hidden_dim, out_channel)# 降维
-        # 层缩放参数
+        # 层缩放参数 类似 Transformer 的 ​​可学习缩放因子​​，调整各通道的重要性
         self.gamma = nn.Parameter(layer_scale_init_value * torch.ones((out_channel)), 
                                     requires_grad=True) if layer_scale_init_value > 0 else None
         # 随机路径丢弃
@@ -225,18 +226,19 @@ class ConvNextBlock(nn.Module):
 
     def forward(self, x):
         input = x
-        x = self.dwconv(x)  # 深度卷积 [B, C, H, W]
-        x = x.permute(0, 2, 3, 1) #转为 channels_last [B, H, W, C] # (N, C, H, W) -> (N, H, W, C)
-        x = self.norm(x)   # 层归一化
-        x = self.pwconv1(x)    # 升维至 hidden_dim
-        x = self.act(x)          # GELU 激活
-        x = self.pwconv2(x)      # 降维至 out_channel
+        x = self.dwconv(x)              # 深度卷积 [B, C, H, W]
+                                        # 在 channels_last 模式下，nn.Linear 等价于 1x1 卷积，但实现更高效
+        x = x.permute(0, 2, 3, 1)       # 转为 channels_last [B, H, W, C] # (N, C, H, W) -> (N, H, W, C)
+        x = self.norm(x)                # 层归一化
+        x = self.pwconv1(x)             # 升维至 hidden_dim
+        x = self.act(x)                 # GELU 激活
+        x = self.pwconv2(x)             # 降维至 out_channel
         if self.gamma is not None:   
-            x = self.gamma * x  # 层缩放
-        x = x.permute(0, 3, 1, 2) # (N, H, W, C) -> (N, C, H, W) # 转回 channels_first [B, C, H, W]
-
+            x = self.gamma * x          # 缩放 
+        x = x.permute(0, 3, 1, 2)       # (N, H, W, C) -> (N, C, H, W) # 转回 channels_first [B, C, H, W]
         x = input + self.drop_path(x)   # 残差连接 + DropPath
-        return x
+
+        return x                        # (B,C,H,W)
 
 
 
@@ -247,26 +249,25 @@ class ConvNextBlock(nn.Module):
 
 # ​​"Decoder"​​：表示这是一个​​解码器模块​​，负责将低分辨率、高维的特征图逐步上采样并恢复为高分辨率图像，常见于图像重建任务（如超分辨率、图像修复）。
 # ​Decoder 是一个 ​​多阶段特征融合的解码器模块​​，通过上采样、通道调整与残差块堆叠，将编码器的深层特征逐步重建为高分辨率图像。
-# 其名称直接反映了功能本质（解码），适用于需要从低维特征恢复高分辨率像素的任务（如超分辨率、图像修复）
 class Decoder(nn.Module):
     def __init__(self, depth=[2,2,2,2], dim=[112, 72, 40, 24], block_type = None, kernel_size = 3) -> None:
         super().__init__()
-        self.depth = depth # 各阶段模块的堆叠次数（如每个阶段用2个block）
-        self.dim = dim       # 各阶段的通道维度（如[112, 72, 40, 24]）
+        self.depth = depth      # 各阶段模块的堆叠次数（如每个阶段用2个block）
+        self.dim = dim          # 各阶段的通道维度（如[112, 72, 40, 24]）
         self.block_type = block_type     # 核心模块类型（如ConvNextBlock）
         self._build_decode_layer(dim, depth, kernel_size)  # 核心模块类型（如ConvNextBlock）
-        self.pixelshuffle=nn.PixelShuffle(2) # 上采样2倍（输出通道3，分辨率翻倍）
+        self.pixelshuffle=nn.PixelShuffle(2) # 输入通道数：upscale_factor² × 输出通道数 这里 upscale_factor=2
         # self.star_relu=StarReLU()
         self.projback_ = nn.Sequential(
             nn.Conv2d(
-                in_channels=dim[-1],
-                out_channels=2 ** 2 * 3 , kernel_size=1), # 1x1卷积调整通道
+                in_channels=dim[-1], # dim数组的倒数第一个元素
+                out_channels=2 ** 2 * 3 , kernel_size=1), # 输出通道数为12 因为 PixelShuffle的输入通道数：upscale_factor² × 输出通道数 这里 upscale_factor=2
             nn.PixelShuffle(2) # 上采样2倍（输出通道3，分辨率翻倍）
         )
         self.projback_2 = nn.Sequential(
             nn.Conv2d(
-                in_channels=dim[-1],
-                out_channels=2 ** 2 * 3, kernel_size=1),
+                in_channels=dim[-1],# dim数组的倒数第一个元素
+                out_channels=2 ** 2 * 3, kernel_size=1), # 输出通道数为12
             nn.PixelShuffle(2)
         )
         
@@ -278,37 +279,47 @@ class Decoder(nn.Module):
         norm_layer = LayerNorm # 自定义的层归一化
 
         # 构建每个阶段的模块
-        for i in range(1, len(dim)):
-            # 特征处理模块（如堆叠多个block_type）
+        for i in range(1, len(dim)): # len(dim)得到有多少个level 循环后i是1 2 3 是level的之间层
+            # 第i level有 depth[i]个 NAFBlock
             module = [self.block_type(dim[i], dim[i], dim[i], kernel_size) for _ in range(depth[i])]
-            normal_layers.append(nn.Sequential(*module))
-            
-             # 上采样层（放大2倍）
-            upsample_layers.append(nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True))
+            # 加上归一化层
+            # 上采样层（放大2倍）
             
             # 投影层：1x1卷积调整通道 + 归一化 + 激活
+            # i = 1~4
+            # i=1 时 dim[0]=128 dim[1]=96
+            # i=2 时 dim[1]=96 dim[2]=64
+            # i=3 时 dim[2]=64 dim[3]=32
             proj_layers.append(nn.Sequential(
-                nn.Conv2d(dim[i-1], dim[i], 1, 1), 
+                nn.Conv2d(dim[i-1], dim[i], 1, 1), # 通道变小
                 norm_layer(dim[i]),
                 # StarReLU() #self.star_relu()
                 nn.GELU()
                 ))
-        
-        for i in range(1, len(dim)):
-            module = [self.block_type(dim[i], dim[i], dim[i], kernel_size) for _ in range(depth[i])]
-            normal_layers.append(nn.Sequential(*module))
             upsample_layers.append(nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True))
+            normal_layers.append(nn.Sequential(*module))
+        
+        for i in range(1, len(dim)):# len(dim)得到有多少个level 循环后i是1 2 3 是level的之间层
+            # 第i level有 depth[i]个 NAFBlock
+            module = [self.block_type(dim[i], dim[i], dim[i], kernel_size) for _ in range(depth[i])]
+            # 将每一level堆叠的 NAFBlock 串联成模型流水线 NAFBlock适用于对细节敏感且需实时计算的任务
+            # ​​将特征图的空间分辨率扩大2倍
+            # 投影层：1x1卷积调整通道 + 归一化 + 激活
             proj_layers.append(nn.Sequential(
-                               nn.Conv2d(dim[i-1], dim[i], 1, 1),
+                               nn.Conv2d(dim[i-1], dim[i], 1, 1),# 通道变小
                                norm_layer(dim[i]),
             ))
+            upsample_layers.append(nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True))
+            normal_layers.append(nn.Sequential(*module))
 
         # 保存到类属性    
-        self.normal_layers = normal_layers
-        self.upsample_layers = upsample_layers
         self.proj_layers = proj_layers
+        self.upsample_layers = upsample_layers
+        self.normal_layers = normal_layers
 
-    def _forward_stage(self, stage, x):
+    # stage是第几级level的意思
+    # proj_layers upsample_layers normal_layers 都是列表 列表共stage个元素 
+    def _forward_stage(self, stage, x): 
         x = self.proj_layers[stage](x) # 1x1 卷积调整通道数，LayerNorm 稳定训练，GELU 引入非线性。
         x = self.upsample_layers[stage](x) # 使用 nn.Upsample（双线性插值）和 PixelShuffle（子像素卷积）逐步提升分辨率。
         return self.normal_layers[stage](x)
@@ -316,26 +327,34 @@ class Decoder(nn.Module):
     # c3, c2, c1, c0 通常是编码器不同层级的输出（分辨率从低到高，通道数从多到少）
     # ​​融合方式​​：每个解码阶段处理深层特征（如c3），上采样后与浅层特征（如c2）逐元素相乘（*），保留细节信息
     def forward(self, c3, c2, c1, c0):
+
         # 分离clean和ref路径的输入特征（假设双路径处理）
+        # c0 c1 c2 c3 分辨率从低到高，通道数从少到多
         c0_clean, c0_ref = c0, c0 
         c1_clean, c1_ref = c1, c1 
         c2_clean, c2_ref = c2, c2 
         c3_clean, c3_ref = c3, c3 
 
-        # Clean路径处理 ​Clean路径​​：处理待修复图像的特征。
+        # 为什么命名为x_clean？ x_clean是需要清理噪声、缺陷和伪影的图像
+        # 为什么相乘？
+        # 通过跨层级特征调制，实现上下文信息与细节信息的有效融合​​
+        # ​​深层特征（如 c3）​​：包含高级语义信息（如物体类别、整体结构），但空间细节较少。
+        # ​​浅层特征（如 c2）​​：包含丰富的空间细节（如边缘、纹理），但语义信息较弱。
+        # ​​相乘操作​​ 可以将深层特征的语义权重（注意力）施加到浅层特征上，实现 ​​细节增强与噪声抑制​​
         x_clean = self._forward_stage(0, c3_clean) * c2_clean
         x_clean = self._forward_stage(1, x_clean) * c1_clean
         x_clean = self._forward_stage(2, x_clean) * c0_clean
         x_clean = self.projback_(x_clean) # 最终投影为RGB图像
         
         # Ref路径处理（类似clean路径） Ref路径​​：处理参考图像的特征（如类似场景的高质量图像）
+        # stage为什么有3 4 5？ 因为 _build_decode_layer 堆叠了6个 其中0 1 2和3 4 5是对应相等的
         x_ref = self._forward_stage(3, c3_ref) * c2_ref
         x_ref = self._forward_stage(4, x_ref) * c1_ref
         x_ref = self._forward_stage(5, x_ref) * c0_ref
         x_ref = self.projback_2(x_ref)
 
         # 合并双路径输出
-        x=torch.cat((x_clean,x_ref),dim=1)
+        x=torch.cat((x_clean,x_ref),dim=1) # x_clean和x_ref按通道堆叠
         return x
 
 
@@ -387,4 +406,8 @@ class StarReLU(nn.Module):
     
     # ​​scale 的作用​​：若学习到较大的值，会放大重要特征的贡献
     # bias 的作用​​：正偏置可避免激活值全为0（如深层网络的梯度消失问题）。
+
+
+
+
 

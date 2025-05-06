@@ -6,10 +6,12 @@ import os
 import sys
 from os.path import join
 from util.visualizer import Visualizer
-import tqdm
+from tqdm import tqdm
 import visdom
 import numpy as np
 from tools import mutils
+import torch
+from models.cls_model_eval_nocls_reg import ClsModel
 
 class Engine(object):
     def __init__(self, opt,eval_dataset_real,eval_dataset_solidobject,eval_dataset_postcard,eval_dataloader_wild):
@@ -41,42 +43,61 @@ class Engine(object):
             self.writer = util.get_summary_writer(os.path.join(self.basedir, 'logs'))
             self.visualizer = Visualizer(opt)
 
-    def train(self, train_loader, **kwargs):
+
+
+
+    def train(self, train_loader, **kwargs): # **kwargs 是 Python 函数定义中的一种参数写法，意思是“关键字参数字典”。
+        """Train"""                         # key words array
         print('\nEpoch: %d' % self.epoch)
-        avg_meters = util.AverageMeters()
+        avg_meters = util.AverageMeters() # 初始化损失统计器
         opt = self.opt
         model = self.model
         epoch = self.epoch
 
         epoch_start_time = time.time()
-        for i, data in tqdm.tqdm(enumerate(train_loader)):
+
+        train_pbar = tqdm(train_loader)
+
+        for i, data in enumerate(train_pbar):
 
             iter_start_time = time.time()
             iterations = self.iterations
 
+            # 模型前向传播与优化
             model.set_input(data, mode='train')
-            model.optimize_parameters(**kwargs)
+            model.optimize_parameters(**kwargs) # ​​完成一次生成器（net_i）的参数更新
 
-            errors = model.get_current_errors()
-            avg_meters.update(errors)
-            util.progress_bar(i, len(train_loader), str(avg_meters))
-            util.write_loss(self.writer, 'train', avg_meters, iterations)
-            if iterations%100==0:
+            errors = model.get_current_errors() # 返回一个空矩阵
+            avg_meters.update(errors)           #
+            # util.progress_bar(i, len(train_loader), str(avg_meters)) # 进度条
+
+            
+
+            util.write_loss(self.writer, 'train', avg_meters, iterations)  # 记录loss
+            
+
+            # 定期可视化（每100次迭代）
+            if iterations % 100 ==0:
                 imgs=[]
-                output_clean,output_reflection,input=model.return_output()
-                # output_clean,input=model.return_output()
+                output_clean,output_reflection,input=model.return_output() # 从模型 得到 T R I
+                # print('output_clean size: ',(output_clean.shape)) # 是三通道的！
                 
+                # 数据格式转换（HWC -> CHW）并归一化
                 output_clean=np.transpose(output_clean,(2,0,1))/255
                 #output_reflection = np.transpose(output_reflection, (2, 0, 1))/255
                 input = np.transpose(input, (2, 0, 1))/255
                 imgs.append(output_clean)
                 #imgs.append(output_reflection)
                 imgs.append(input)
-                util.get_visual(self.writer,iterations,imgs)
+                util.get_visual(self.writer,iterations,imgs) # 将图像写入TensorBoard
                 if iterations % opt.print_freq == 0 and opt.display_id != 0:
                     t = (time.time() - iter_start_time)
 
-            self.iterations += 1
+            self.iterations += 1  # 更新迭代次数
+
+            loss_G,loss_icnn_pixel,loss_rcnn_pixel,loss_icnn_vgg,loss_exclu,loss_recons=model.get_current_loss()
+            train_pbar.update(1)
+            train_pbar.set_postfix({'loss': loss_G.item()})            
 
         self.epoch += 1
 
@@ -114,6 +135,9 @@ class Engine(object):
             train_loader.reset()
         except:
             pass
+
+        train_pbar.close()
+
 
     def eval(self, val_loader, dataset_name, savedir='./tmp', loss_key=None, **kwargs):
         # print(dataset_name)

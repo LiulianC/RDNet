@@ -5,6 +5,9 @@ import torch.nn.functional as F
 #from pytorch_msssim import SSIM
 from models.vit_feature_extractor import VitExtractor
 from models.vgg import Vgg19
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
+from torchvision import models
 
 
 ###############################################################################
@@ -60,34 +63,48 @@ class MultipleLoss(nn.Module):
         return total_loss
 
 
-class MeanShift(nn.Conv2d):
+class MeanShift(nn.Conv2d): 
     def __init__(self, data_mean, data_std, data_range=1, norm=True):
         """norm (bool): normalize/denormalize the stats"""
         c = len(data_mean)
         super(MeanShift, self).__init__(c, c, kernel_size=1)
         std = torch.Tensor(data_std)
-        self.weight.data = torch.eye(c).view(c, c, 1, 1)
+        # torch.eye(c) 输出​​：一个 c × c 的二维张量（矩阵），其 ​​主对角线元素为 1​​，其余元素为 0。
+        self.weight.data = torch.eye(c).view(c, c, 1, 1) # 将单位矩阵转换为 ​​1x1 卷积核的权重​​。(out_channels, in_channels, kernel_height, kernel_width)
+        # 为什么(out_channels, in_channels, kernel_height, kernel_width) 是 卷积核的size 真奇怪，现存疑
         if norm:
+            # .data 的作用​ 返回一个与原始张量共享存储空间但 ​​剥离计算图​​ 的新张量 不跟踪梯度​​ 直接修改原始数据​
+            # .div_() 原地除法操作​​（in-place division），等效于 x = x / y，但直接修改原张量。
+            # 原地权重调整: weight = 1 / std
             self.weight.data.div_(std.view(c, 1, 1, 1))
+            # 偏置调整: bias = (-mean * data_range) / std
             self.bias.data = -1 * data_range * torch.Tensor(data_mean)
             self.bias.data.div_(std)
         else:
             self.weight.data.mul_(std.view(c, 1, 1, 1))
             self.bias.data = data_range * torch.Tensor(data_mean)
-        self.requires_grad = False
+        self.requires_grad = False # 归一化参数不更新
+
+        # 为什么没有return却能return？因为继承自2d卷积 所以会自动return 
 
 
 class VGGLoss(nn.Module):
     def __init__(self, vgg=None, weights=None, indices=None, normalize=True):
         super(VGGLoss, self).__init__()
         if vgg is None:
-            self.vgg = torch.compile(Vgg19().cuda())
+            # self.vgg = torch.compile(Vgg19().cuda())
+            self.vgg = models.vgg19(pretrained=True).features.to('cuda')
         else:
             self.vgg = vgg
         self.criterion = nn.L1Loss()
+        # 经验性设置，深层（如第五层）权重较大，强调语义对齐。
         self.weights = weights or [1.0 / 2.6, 1.0 / 4.8, 1.0 / 3.7, 1.0 / 5.6, 10 / 1.5]
-        self.indices = indices or [2, 7, 12, 21, 30]
+        # 浅层（如 relu1_2）捕捉边缘、颜色等低级特征。 深层（如 relu5_2）捕捉物体结构、语义等高级特征。
+        self.indices = indices or [2, 7, 12, 21, 30] # relu1_2、relu2_2、relu3_2、relu4_2、relu5_2
+        
         if normalize:
+            # 第一个数组是平均值的意思 第二个数组是标准差
+            # 为什么给的是三元素数组？
             self.normalize = MeanShift([0.485, 0.456, 0.406], [0.229, 0.224, 0.225], norm=True).cuda()
         else:
             self.normalize = None
@@ -96,13 +113,29 @@ class VGGLoss(nn.Module):
         if self.normalize is not None:
             x = self.normalize(x)
             y = self.normalize(y)
-        with torch.no_grad():
-            y_vgg = self.vgg(y, self.indices)
-        x_vgg = self.vgg(x, self.indices) #, self.vgg(y, self.indices)
-        loss = 0
-        for i in range(len(x_vgg)):
-            loss += self.weights[i] * self.criterion(x_vgg[i], y_vgg[i]) #.detach())
+        # vgg只是一个固定网络 用来提取x与y的信息 为什么算x时要保存梯度 算y时不要？
+        # 即使 VGG 的参数是固定的，​​计算图中仍会保留 x 到 loss 的路径​​，从而允许梯度传递到图像生成器（消除反光）。
+        # loss → L1梯度 → x_vgg梯度 → VGG网络的反向计算 → x的梯度 → G的参数梯度
+        loss = []
+        for i, layer in enumerate(self.vgg): # 遍历 VGG19 模型的每一层
+            x = layer(x) # 将输入图像 x 通过当前层。
+            with torch.no_grad(): 
+                y = layer(y) # 将目标图像 y 通过当前层
+            if i in self.indices: 
+                loss.append(F.l1_loss(x, y)) 
 
+        for i in range(len(loss)):
+            loss[i] = self.weights[i] * loss[i]
+        vgg_loss = sum(loss)
+        return vgg_loss
+    
+    def compute_perceptual_loss(x, y):
+        loss = 0.0
+        for i, layer in enumerate(vgg): # 遍历 VGG19 模型的每一层
+            x = layer(x) # 将输入图像 x 通过当前层。
+            y = layer(y) # 将目标图像 y 通过当前层
+            if i in {1, 6, 11, 20, 29}: # conv1_2, conv2_2, conv3_3, conv4_3, conv5_3 # 这些索引对应 VGG19 模型中的特定卷积层（conv1_2、conv2_2、conv3_3、conv4_3、conv5_3）。
+                loss += F.l1_loss(x, y) # 如果当前层是这些特定卷积层之一，则计算 x 和 y 之间的 L1 损失，并将其加到 loss 中。
         return loss
 
 
@@ -375,6 +408,97 @@ class DiscLossRa(DiscLoss):
         loss_D = self.criterionGAN(pred_real - torch.mean(pred_fake, dim=0, keepdim=True), 1)
         loss_D += self.criterionGAN(pred_fake - torch.mean(pred_real, dim=0, keepdim=True), 0)
         return loss_D * 0.5, pred_fake, pred_real
+
+
+
+
+
+
+class SSIM(nn.Module):
+    def __init__(self, window_size=11, channel=3, data_range=1.0, size_average=True):
+        """
+        Structural Similarity Index (SSIM) 模块
+        :param window_size: 高斯窗口大小（必须为奇数）
+        :param channel: 输入图像的通道数（1或3）
+        :param data_range: 像素值范围（如0-1为1.0，0-255为255.0）
+        :param size_average: 是否对空间维度取平均
+        """
+        super(SSIM, self).__init__()
+        self.window_size = window_size
+        self.channel = channel
+        self.data_range = data_range
+        self.size_average = size_average
+
+        # 生成高斯权重核
+        self.gaussian_kernel = self._create_gaussian_kernel()
+
+    def _create_gaussian_kernel(self):
+        # 生成1D高斯核
+        sigma = 1.5  # 经验值，对应窗口大小11
+        coords = torch.arange(self.window_size).float()
+        coords -= (self.window_size - 1) / 2.0
+        g = torch.exp(-(coords**2) / (2 * sigma**2))
+        g /= g.sum()
+
+        # 生成2D高斯核（外积）
+        gaussian = torch.outer(g, g)
+        gaussian = gaussian.unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
+
+        # 扩展到多通道
+        gaussian = gaussian.repeat(self.channel, 1, 1, 1)  # [C,1,H,W]
+        return nn.Parameter(gaussian, requires_grad=False)
+
+    def forward(self, img1, img2):
+        """
+        计算两个图像的SSIM
+        :param img1: 输入图像1 [B,C,H,W]
+        :param img2: 输入图像2 [B,C,H,W]
+        :return: SSIM值或SSIM图
+        """
+        # 输入检查
+        if img1.shape != img2.shape:
+            raise ValueError("Input images must have the same dimensions")
+        if self.window_size > min(img1.shape[2], img1.shape[3]):
+            raise ValueError("Window size exceeds image dimensions")
+
+        # 数据范围相关常数
+        C1 = (0.01 * self.data_range) ** 2
+        C2 = (0.03 * self.data_range) ** 2
+
+        # 应用高斯滤波计算局部统计量
+        def gaussian_conv(x):
+            return F.conv2d(x, self.gaussian_kernel.to(x.device), 
+                           padding=self.window_size//2, groups=self.channel)
+
+        # 计算均值
+        mu1 = gaussian_conv(img1)
+        mu2 = gaussian_conv(img2)
+
+        # 计算方差和协方差
+        mu1_sq = mu1.pow(2)
+        mu2_sq = mu2.pow(2)
+        mu1_mu2 = mu1 * mu2
+
+        sigma1_sq = gaussian_conv(img1 * img1) - mu1_sq
+        sigma2_sq = gaussian_conv(img2 * img2) - mu2_sq
+        sigma12 = gaussian_conv(img1 * img2) - mu1_mu2
+
+        # SSIM公式
+        numerator = (2 * mu1_mu2 + C1) * (2 * sigma12 + C2)
+        denominator = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)
+        ssim_map = numerator / denominator
+
+        if self.size_average:
+            return ssim_map.mean()
+        else:
+            return ssim_map
+
+
+
+
+
+
+
 
 
 class SSIM_Loss(nn.Module):
