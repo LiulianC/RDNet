@@ -114,15 +114,15 @@ class YTMTNetBase(BaseModel):
         self._eval()
         self.set_input(data, 'eval')
         with torch.no_grad():
-            self.forward_eval()
+            self.forward_eval() # 虽然没有要返回值 但是 self.output_j 还是会被赋值的
 
-            output_i = tensor2im(self.output_j[6])
-            output_j = tensor2im(self.output_j[7])
+            output_i = tensor2im(self.output_j[6]) # clean
+            output_j = tensor2im(self.output_j[7]) # reflection
             target = tensor2im(self.target_t)
             target_r = tensor2im(self.target_r)
 
             if self.aligned:
-                res = index.quality_assess(output_i, target)
+                res = index.quality_assess(output_i, target) # 送入计算量化指标
             else:
                 res = {}
 
@@ -186,7 +186,7 @@ class ClsModel(YTMTNetBase):
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.net_c = None
 
-    def print_network(self): # 网络结构打印​
+    def print_networks(self): # 网络结构打印​
         print('--------------------- Model ---------------------')
         print('##################### NetG #####################')
         networks.print_network(self.net_i)
@@ -213,7 +213,7 @@ class ClsModel(YTMTNetBase):
             self.vgg = losses.Vgg19(requires_grad=False).to(self.device)
             in_channels += 1472 # # VGG多层级特征拼接后的通道数
 
-        channels = [64, 128, 256, 512]  # 各层通道数
+        channels = [64, 128, 256, 512]  # 各层通道数 
         layers = [2, 2, 4, 2]           # 各层块数
         num_subnet = opt.num_subnet     # 子网络数量（来自配置）
 
@@ -267,7 +267,67 @@ class ClsModel(YTMTNetBase):
         if opt.resume:
             self.load(self, opt.resume_epoch)
 
-        self.print_network()
+        if opt.print_networks is not None:
+            if opt.print_networks:
+                self.print_networks()
+
+
+    def load_networks(self):
+        if self.opt.model_path is not None:
+            print('\n')
+            print('--------------------------------------------')
+            print('Load the model from %s ' % self.opt.icnn_path)
+            icnn_path = self.opt.icnn_path
+            state_dict = torch.load(icnn_path)
+            self.net_i.load_state_dict(state_dict['icnn'])
+            self.optimizer_G.load_state_dict(state_dict['opt_g'])
+            self.epoch = state_dict['epoch']
+        else:
+            print('No model to load. ')
+            pass        
+        
+
+
+
+    def state_dict(self):
+        state_dict = {
+            'icnn': self.net_i.state_dict(),
+            'opt_g': self.optimizer_G.state_dict(),
+            'epoch': self.epoch, 'iterations': self.iterations
+        }
+
+        if self.opt.lambda_gan > 0: # 如果启动gan网络 算gan损失
+            state_dict.update({
+                'opt_d': self.optimizer_D.state_dict(),
+                'netD': self.netD.state_dict(),
+            })
+        return state_dict
+
+    def state_dict_eval(self):
+        state_dict = {
+            'icnn': self.net_i.state_dict(),
+            'opt_g': self.optimizer_G.state_dict(),
+            'epoch': self.epoch, 'iterations': self.iterations
+        }
+        return state_dict
+
+
+    def save(self, label=None):
+        epoch = self.epoch
+        iterations = self.iterations
+
+        if label is None:
+            model_name = os.path.join(self.model_save_dir, self.opt.name + '_%03d_%08d.pth' % ((epoch), (iterations)))
+        else:
+            model_name = os.path.join(self.model_save_dir, self.opt.name + '_' + label + '.pth')
+
+        torch.save(self.state_dict(), model_name)
+
+    
+    def save_eval(self, label=None):
+        model_name = os.path.join(self.model_save_dir, label + '.pth')
+        torch.save(self.state_dict_eval(), model_name)
+
 
 
     # 判别器反向传播​
@@ -410,12 +470,15 @@ class ClsModel(YTMTNetBase):
        
         self.output_j=[]
         input_i = self.input
+
         if self.vgg is not None:
             input_i = self.hyper_column(input_i)
+
         ipt = self.net_c(input_i)
         
         output_i, output_j = self.net_i(input_i,ipt,prompt=True)
         self.output_i = output_i #alpha * output_i + beta
+
         for i in range(self.opt.loss_col):
             out_reflection, out_clean = output_j[i][:, :3, ...], output_j[i][:, 3:, ...]
             self.output_j.append(out_clean) 
@@ -433,11 +496,8 @@ class ClsModel(YTMTNetBase):
 
     def return_output(self):
         output_clean = self.output_j[1]
-        output_clean = tensor2im(output_clean).astype(np.uint8)
         output_reflection = self.output_j[0]
-        output_reflection = tensor2im(output_reflection).astype(np.uint8)
-        input=tensor2im(self.input)
-        return output_clean,output_reflection,input
+        return output_clean,output_reflection,self.input,self.target_r,self.target_t # 加个对照
     
 
     # 排斥损失（关键创新点）​
@@ -506,27 +566,7 @@ class ClsModel(YTMTNetBase):
         grady = img[:, :, :, 1:] - img[:, :, :, :-1]
         return gradx, grady
 
-    def load(self, model, resume_epoch=None):
-        icnn_path = model.opt.icnn_path
-        state_dict = torch.load(icnn_path)
-        model.net_i.load_state_dict(state_dict['icnn'])
-        return state_dict
 
-    def state_dict(self):
-        state_dict = {
-            'icnn': self.net_i.state_dict(),
-            'opt_g': self.optimizer_G.state_dict(),
-            #'ema' : self.ema.state_dict(),
-            'epoch': self.epoch, 'iterations': self.iterations
-        }
-
-        if self.opt.lambda_gan > 0:
-            state_dict.update({
-                'opt_d': self.optimizer_D.state_dict(),
-                'netD': self.netD.state_dict(),
-            })
-
-        return state_dict
     
     def get_current_loss(self):
         return self.loss_G, self.loss_icnn_pixel, self.loss_rcnn_pixel, self.loss_icnn_vgg, self.loss_exclu, self.loss_recons # loss都是数 不是列表

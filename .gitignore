@@ -10,3 +10,5 @@ models/arch/__pycache__/**
 options/__pycache__/**
 tools/__pycache__/**
 data/__pycache__/**
+checkpoints/ytmt_ucs_sirs/*.pth
+eval_results/**

@@ -20,7 +20,7 @@ graph: False
 high_gamma: 1.3
 high_sigma: 5
 hyper: False
-icnn_path: None
+icnn_path: D:\gzm-RDNet\RDNet\checkpoints\ytmt_ucs_sirs\ytmt_ucs_sirs_latest.pth
 if_align: False
 inet: ytmt_ucs
 init_lr: 0.01

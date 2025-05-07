@@ -143,9 +143,10 @@ def get_summary_writer(log_dir):
         os.mkdir(log_dir)
     writer = SummaryWriter(log_dir)
     return writer
+
 def get_visual(writer,iteration,imgs):
-    writer.add_image('clean',imgs[0],iteration)
-    writer.add_image('input', imgs[1],iteration)
+    writer.add_images('input', imgs[0],iteration,dataformats='NCHW')
+    writer.add_images('clean',imgs[1],iteration,dataformats='NCHW')
     #writer.add_image('ref', imgs[1],iteration)
     #writer.add_image('input', imgs[2],iteration)
 
