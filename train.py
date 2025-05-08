@@ -22,9 +22,9 @@ opt.display_port = 8097
 opt.display_freq = 1
 opt.num_subnet = 4
 
-opt.gen_scenery_num = 10
-opt.gen_tissue_num  = 5
-opt.real_tissue_num = 5
+opt.gen_scenery_num = 300 
+opt.gen_tissue_num  = 500
+opt.real_tissue_num = 1000
 opt.model_path = './checkpoints/ytmt_ucs_sirs/ytmt_ucs_sirs_latest.pth'# 如果不要在我基础上训练就注释我
 opt.print_networks = False
 
@@ -120,6 +120,6 @@ def set_learning_rate(lr):
 if __name__ == '__main__':
     mp.freeze_support()
     engine.model.opt.lambda_gan = 0
-    set_learning_rate(opt.lr)
-    while engine.epoch <= 20:
+    set_learning_rate(1e-5)
+    while engine.epoch <= 40:
         engine.train(train_dataloader_fusion)

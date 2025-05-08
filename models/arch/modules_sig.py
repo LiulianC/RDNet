@@ -268,7 +268,7 @@ class Decoder(nn.Module):
             nn.Conv2d(
                 in_channels=dim[-1],# dim数组的倒数第一个元素
                 out_channels=2 ** 2 * 3, kernel_size=1), # 输出通道数为12
-            nn.PixelShuffle(2)
+            nn.PixelShuffle(2) # nn.PixelShuffle(2) 是 PyTorch 中的一个​​亚像素卷积层​​，用于实现​​图像超分辨率​​中的高效上采样操作。
         )
         
     def _build_decode_layer(self, dim, depth, kernel_size):

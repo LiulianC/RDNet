@@ -62,7 +62,7 @@ class Engine(object):
                 train_loader,
                 desc="Training",      # 左侧描述文字
                 total=len(train_loader),  # 确保总数正确
-                ncols=200,               # 固定宽度（根据图中格式建议）
+                ncols=100,               # 固定宽度（根据图中格式建议）
                 dynamic_ncols=False,    # 禁用动态宽度
                 bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
                 # leave=False             # 训练结束后自动清除
@@ -181,11 +181,11 @@ class Engine(object):
                     self.f.write(f"{data['fn'][0]} {index['PSNR']} {index['SSIM']}\n")
                 avg_meters.update(index)
 
-                if i % 1 == 0:
+                if i % 1 == 0 and self.epoch % 2 == 0:
                     output_clean,output_reflection,input,target_r,target_t=model.return_output()
 
                     
-                    img_o = torch.cat((input,output_clean,target_t,output_reflection,target_r), dim=0)
+                    img_o = torch.cat((input, output_clean, target_t, output_reflection, target_r), dim=0)
                     # print('input size: ',input.shape)
                     # print('output_clean size: ',output_clean.shape) 
                     # print('target_t size: ',target_t.shape)

@@ -61,9 +61,17 @@ class Fusion(nn.Module):
 
 
 # Level 是用于构建 ​​分层神经网络（如 U-Net、FPN）​​ 的核心模块，负责处理特定层级的特征。
+
+# level参数
+# level 由SubNet定义level的时候传入0 1 2 3
+# channel [32, 64, 96, 128]
+# layers=[2, 3, 6, 3]
+# kernel_size=3
+# block_type=NAFBlock
+# first_col 在本网络决定
 class Level(nn.Module):
     # level 和 layers 区别：level 是 fullnet_NLP的第几层subnet； layer是一个level有多少个ConvNextBlock
-    def __init__(self, level, channels, layers, kernel_size, first_col, dp_rate=0.0, block_type=ConvNextBlock) -> None:
+    def __init__(self, level, channels, layers, kernel_size, first_col, dp_rate=0.0, block_type=ConvNextBlock) -> None: # block_type被赋值为 NAFBlock
         super().__init__()
 
         # layers 是一个列表，表示每个层级的块数（如 [3, 4, 6, 3]），这里sum(layers[:level])表示当前层级之前的所有块数之和
@@ -83,7 +91,7 @@ class Level(nn.Module):
         # *modules 前面的星号（*）是 ​​解包操作符（Unpacking Operator）​​，它的作用是将一个列表（或元组）中的元素 ​​逐个展开​​，作为独立的参数传递给函数或构造函数。
         self.blocks = nn.Sequential(*modules) # 由多个 ConvNextBlock 块组成的序列，用于深度特征提取。块数量由 layers[level] 决定
 
-    def forward(self, *args):
+    def forward(self, *args):  # args ： level0(x, c1) 只给俩参数
         x = self.fusion(*args) # 得到了Fusion的输出 x_clean
         x = self.blocks(x) # # 由多个 ConvNextBlock 块组成的序列，用于深度特征提取。块数量由 layers[level] 决定
         return x
@@ -104,6 +112,13 @@ class Level(nn.Module):
 # ​​常规模式​​：保存所有中间变量用于反向传播，显存占用较高但计算速度快。
 # ​​内存优化模式​​：通过 ReverseFunction 实现按需重计算，显著减少显存占用，适用于大模型或高分辨率输入。
 # 其核心功能是通过 ​​残差连接 + 多层级特征处理​​ 构建深度网络，常用于图像分割、生成等需要多尺度特征的任务。
+
+# subnet的参数
+# channel [32, 64, 96, 128]
+# layers=[2, 3, 6, 3]
+# kernel_size=3
+# block_type=NAFBlock
+# first_col 在本网络决定 是不是第0 level
 class SubNet(nn.Module):
     def __init__(self, channels, layers, kernel_size, first_col, dp_rates, save_memory, block_type=ConvNextBlock) -> None:
         super().__init__()
@@ -149,7 +164,7 @@ class SubNet(nn.Module):
 
         return c0, c1, c2, c3
 
-    def forward(self, *args):
+    def forward(self, *args): # args = x, c0, c1, c2, c3
         self._clamp_abs(self.alpha0.data, 1e-3) # .data返回张量的纯数值部分（剥离梯度计算相关的上下文），相当于获取参数的“原始值”。
         self._clamp_abs(self.alpha1.data, 1e-3)
         self._clamp_abs(self.alpha2.data, 1e-3)
@@ -201,7 +216,7 @@ class StarReLU(nn.Module):
 # 属于​​多任务学习模型​​，结合了​​图像特征提取​​、​​多尺度子网络处理​​和​​解码重构​​功能。
 # FullNet_NLP是一个结合预训练模型、多级子网络和条件提示机制的高级图像处理模型，
 # 适用于需要多尺度特征融合和外部条件控制的任务（如条件图像恢复）
-class FullNet_NLP(nn.Module):
+class FullNet_NLP(nn.Module): # 调用的时候输入参数：output_i, output_j = self.net_i(input_i,ipt,prompt=True)
     def __init__(self, channels=[32, 64, 96, 128], layers=[2, 3, 6, 3], num_subnet=5,loss_col=4, kernel_size=3, num_classes=1000,
                  drop_path=0.0, save_memory=True, inter_supv=True, head_init_scale=None, pretrained_cols=16) -> None:
         super().__init__()
@@ -215,7 +230,7 @@ class FullNet_NLP(nn.Module):
             nn.Conv2d(3, channels[0], kernel_size=5, stride=2, padding=2),
             LayerNorm(channels[0], eps=1e-6, data_format="channels_first")
         )
-        # prompt​​：条件提示生成器，将PretrainedConvNext学到的特征 映射到特征空间，动态调整初始特征
+        # prompt ​​：条件提示生成器，将PretrainedConvNext学到的特征 映射到特征空间，动态调整初始特征
         self.prompt=nn.Sequential(nn.Linear(in_features=6,out_features=512),
                                   StarReLU(),
                                   nn.Linear(in_features=512,out_features=channels[0]),
@@ -232,6 +247,12 @@ class FullNet_NLP(nn.Module):
             # first_col=True 代表 当前是 第0层subnet
             first_col = True if i == 0 else False  
             
+            # subnet的参数
+            # channel [32, 64, 96, 128]
+            # layers=[2, 3, 6, 3]
+            # kernel_size=3
+            # block_type=NAFBlock
+            # first_col 在本网络决定
             self.add_module(f'subnet{str(i)}', SubNet(
                 channels, layers, kernel_size, first_col, 
                 dp_rates=dp_rate, save_memory=save_memory,
@@ -259,6 +280,9 @@ class FullNet_NLP(nn.Module):
         self.baseball_adapter.append(nn.Conv2d(192 * 8, 64 * 8, kernel_size=1))
         self.baseball.load_state_dict(torch.load('D:/gzm-RDNet/RDNet\models/pretrained/focal.pth'))
     
+    ## 调用的时候输入参数：output_i, output_j = self.net_i(input_i,ipt,prompt=True)
+    # ipt 来自于cls 来自于 classifier.py中 PretrainedConvNext 的输出，size为(B,C=6)
+    # ipt = self.net_c(input_i)
     def forward(self, x_in,alpha,prompt=True):
         # x_in：原始图像输入。alpha：条件向量（6维），用于生成提示特征.prompt：是否启用提示机制（默认开启）。
         x_cls_out = []
@@ -279,7 +303,6 @@ class FullNet_NLP(nn.Module):
         
         # 提示融合​​：若启用prompt，将alpha生成的提示向量与x_stem相乘，动态调制初始特征
         if prompt==True:
-
             # alpha 是clsmodel的 ipt，来自classifier.py中 PretrainedConvNext 的输出，size为(B,C=6)
             # PretrainedConvNext 是直接调用timm库的模型
             # alpha（前 3 维）：通道级缩放因子，增强重要特征。
@@ -290,14 +313,17 @@ class FullNet_NLP(nn.Module):
             # 在最后一个维度后添加一个维度（索引 -1 表示倒数第一）,再次在最后一个维度后添加一个维度.从 [B, C0] 调整为 [B, C0, 1, 1]
             # 使其能和四个维度的x_stem相乘
             prompt_alpha = prompt_alpha.unsqueeze(-1).unsqueeze(-1)
-            x=prompt_alpha*x_stem # prompt_alpha size (B,64,1,1) x_stem size (B,64,H，W)
+            x = prompt_alpha * x_stem # prompt_alpha size (B,64,1,1) x_stem size (B,64,H，W)
         else :
             x = x_stem
 
         # 子网络处理​​：循环调用各子网络（SubNet），传递并更新多级特征c0, c1, c2, c3
         # 子网络就是 把focalnet学到的各层次特征 在subnet仿射变换 在level的时候上下层交流融合
         for i in range(self.num_subnet): # i=0~3
-            c0, c1, c2, c3 = getattr(self, f'subnet{str(i)}')(x, c0, c1, c2, c3)
+
+            #getattr 用于​​动态获取对象的属性或方法​​。它的作用是通过字符串名称访问对象的成员
+            # 每个循环都输入x, c0, c1, c2, c3 其中 c0, c1, c2, c3是上一个子网络的输出 所以 最后一个子网络才是集大成者！
+            c0, c1, c2, c3 = getattr(self, f'subnet{str(i)}')(x, c0, c1, c2, c3) 
             
             # # 在本网络 num_subnet固定=4 和 Loss_col 固定=5 所以无论i是什么 都成立
             # 决定从第几个子网络（SubNet）开始 ​​计算损失​​ 这里给全部自网络都计算loss
@@ -306,12 +332,12 @@ class FullNet_NLP(nn.Module):
                 # x_img_out 就是 原始图像在通道维度上拼接 - decoder输出
                 # 为什么不是dim=1而是dim=-3?如果未来张量格式调整为其他顺序（如 (B, H, W, C)），使用 dim=-3 的代码会直接报错，提醒开发者检查维度逻辑，而 dim=1 会静默错误地拼接其他维度
                 # decoder是四个模块的列表 分别输入c3 c2 c1 c0  decoder 还进行了特征的融合
-                # decoder返回的是 x_clean and x_ref 通过通道拼接在一起 B,6,H,W 是提取的各种特征并重建的图像
+                # decoder返回的是 x_clean and x_ref 通过通道拼接在一起 B,6,H,W 是提取的各种特征并重建的图像 一个子网络就重建一福B,6,H,W图像
                 # 为什么相减？通过​​残差学习（Residual Learning）​​让模型专注于学习输入图像与解码器重构图像之间的​​差异信息​​，而非直接生成完整图像
                 x_img_out.append(torch.cat([x_in, x_in], dim=-3) - self.decoder_blocks[-1](c3, c2, c1, c0) )
                 # decoder_blocks[-1] 是尽管level变化 都固定使用最后一个解码器模块，但最后一个解码器模块与其他模块其实是一样的……
 
-
+                # subnet0的输出是 x_img_out[0]  subnet1的输出是 x_img_out[1]  subnet2的输出是 x_img_out[2]  subnet3的输出是 x_img_out[3]
         return x_cls_out, x_img_out # x_cls_out什么也没操作 是空的  x_img_out 是4长度的 B,6,H,W的列表
 
     # 对卷积和全连接层使用截断正态分布初始化（trunc_normal_），偏置项初始化为0，确保训练稳定性

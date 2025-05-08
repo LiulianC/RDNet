@@ -51,7 +51,7 @@ class ReverseFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, run_functions, alpha, *args):
         l0, l1, l2, l3 = run_functions # 四个阶段的处理函数
-        alpha0, alpha1, alpha2, alpha3 = alpha # 各阶段的残差权重
+        alpha0, alpha1, alpha2, alpha3 = alpha # 各阶段的残差权重 是自学习的
         ctx.run_functions  = run_functions
         ctx.alpha = alpha
         ctx.preserve_rng_state = True

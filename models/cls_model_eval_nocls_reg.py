@@ -448,7 +448,8 @@ class ClsModel(YTMTNetBase):
         # 主网络生成输出
         # output_i是RDnet的 x_cls_out ,output_j是RDnet的x_img_out  x_cls_out 此时还是空的 x_img_out 是原始图像 减去 提取到的特征又被重建的图像（残差）
         # output_j是4长度的 B,6,H,W的列表
-        output_i, output_j = self.net_i(input_i,ipt,prompt=True) # 这里output_j是4长度的 B,6,H,W的列表
+        # subnet0的输出是 output_j[0]  subnet1的输出是 output_j[1]  subnet2的输出是 output_j[2]  subnet3的输出是 output_j[3]
+        output_i, output_j = self.net_i(input_i,ipt,prompt=True) 
         self.output_i = output_i
 
         # 整理多级输出（clean和reflection交替存放）
@@ -457,9 +458,16 @@ class ClsModel(YTMTNetBase):
             out_reflection, out_clean = output_j[i][:, :3, ...], output_j[i][:, 3:, ...]
             
             # 这里 self.output_j 不是output_j, self.output_j 是长度为8的B,3,H,W的列表
-            self.output_j.append(out_clean)   # 干净图像层
-            self.output_j.append(out_reflection)   # 反射层
 
+            # i=0 out_reflection,out_clean = output_j[0][:, :3, ...], output_j[0][:, 3:, ...]   抽1元素的output_j 分成两个B,3,H,W 拼到列表 来自子网络0
+            # i=1 out_reflection,out_clean = output_j[1][:, :3, ...], output_j[1][:, 3:, ...]   抽1元素的output_j 分成两个B,3,H,W 拼到列表 来自子网络1
+            # i=2 out_reflection,out_clean = output_j[2][:, :3, ...], output_j[2][:, 3:, ...]   抽1元素的output_j 分成两个B,3,H,W 拼到列表 来自子网络2
+            # i=3 out_reflection,out_clean = output_j[3][:, :3, ...], output_j[3][:, 3:, ...]   抽1元素的output_j 分成两个B,3,H,W 拼到列表 来自子网络3
+                                    
+            self.output_j.append(out_clean)   # 干净图像层 双数
+            self.output_j.append(out_reflection)   # 反射层 单数
+
+        
         return self.output_i, self.output_j
 
 
@@ -495,9 +503,9 @@ class ClsModel(YTMTNetBase):
 
 
     def return_output(self):
-        output_clean = self.output_j[1]
-        output_reflection = self.output_j[0]
-        return output_clean,output_reflection,self.input,self.target_r,self.target_t # 加个对照
+        output_clean = self.output_j[6]
+        output_reflection = self.output_j[7]
+        return output_clean, output_reflection,self.input,self.target_r,self.target_t # 加个对照
     
 
     # 排斥损失（关键创新点）​

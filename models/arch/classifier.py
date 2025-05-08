@@ -6,6 +6,7 @@ import torch.nn.functional as F
 
 # PretrainedConvNext 类的核心功能是分类​
 # 通过 self.head = nn.Linear(768, 6) 输出 ​​6 维向量​​，符合分类任务的典型设计（例如 6 类分类的 logits
+# real data里 label1 和 input 的光线有差别 本模块用于调整各通道输出
 class PretrainedConvNext(nn.Module):
     def __init__(self, model_name='convnext_base', pretrained=True):
         super(PretrainedConvNext, self).__init__()
@@ -16,6 +17,7 @@ class PretrainedConvNext(nn.Module):
         with torch.no_grad():
             # 将输入张量 x 插值（缩放）到目标尺寸 (224, 224)，使用双线性插值（bilinear）方法，并启用 align_corners 对齐模式
             cls_input = F.interpolate(x, size=(224, 224), mode='bilinear', align_corners=True)
+        
         # Forward pass through the ConvNext model
         out = self.model(cls_input)
         out = self.head(out)

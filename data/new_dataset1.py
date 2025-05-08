@@ -50,8 +50,7 @@ def paired_data_transforms(img_1, img_2, img_3, unaligned_transforms=False):
         return i, j, th, tw
 
     # 随机缩放​​：保持宽高比，缩放到 [320, 640] 之间的随机偶数尺寸
-    # target_size = int(random.randint(320, 640) / 2.) * 2
-    target_size = 256
+    target_size = int(random.randint(256, 640) / 2.) * 2
     ow, oh = img_1.size
     if ow >= oh:
         img_1 = __scale_height(img_1, target_size)
@@ -75,9 +74,10 @@ def paired_data_transforms(img_1, img_2, img_3, unaligned_transforms=False):
         img_2 = TF.rotate(img_2, angle)
         img_3 = TF.rotate(img_3, angle)
 
-    # 随机裁剪​​：固定裁剪为 320x320
-    i, j, h, w = get_params(img_1, (320, 320))
-    img_1 = TF.crop(img_1, i, j, h, w)
+    # 随机裁剪​​：随机在（i,j）位置会有小偏移
+    i, j, h, w = get_params(img_1, (256, 256)) # （i,j）是左上角坐标 h w是目标大小
+    img_1 = TF.crop(img_1, i, j, h, w) # 这里就已经变成目标大小了
+
 
     # 异步位移裁剪​​（若启用）：对第二张图像施加轻微的位置偏移
     if unaligned_transforms:
@@ -89,7 +89,8 @@ def paired_data_transforms(img_1, img_2, img_3, unaligned_transforms=False):
 
     img_2 = TF.crop(img_2, i, j, h, w)
 
-    i, j, h, w = get_params(img_1, (320, 320))
+
+    # 异步位移裁剪​​（若启用）：对第二张图像施加轻微的位置偏移
     if unaligned_transforms:
         # print('random shift')
         i_shift = random.randint(-10, 10)
@@ -99,7 +100,7 @@ def paired_data_transforms(img_1, img_2, img_3, unaligned_transforms=False):
 
     img_3 = TF.crop(img_3, i, j, h, w)
 
-    return img_1, img_2, img_3
+    return img_1, img_2, img_3 # 三张图片一样大 
 
 
 
@@ -292,7 +293,6 @@ class DSRTestDataset(BaseDataset):
         self.real = real
 
         
-
         self.I_paths = []
         self.R_paths = []
         self.T_paths = []
@@ -330,11 +330,11 @@ class DSRTestDataset(BaseDataset):
         except Exception:
             r_img = Image.fromarray(np.clip(np.array(m_img, dtype=np.float32) - np.array(t_img, dtype=np.float32), 0, 255).astype(np.uint8))
 
-        if self.if_align:
-            t_img, m_img, r_img = self.align(t_img, m_img, r_img)
-
         if self.enable_transforms:
             t_img, m_img, r_img = paired_data_transforms(t_img, m_img, r_img, self.unaligned_transforms)
+
+        if self.if_align:
+            t_img, m_img, r_img = self.align(t_img, m_img, r_img)
 
         B = TF.to_tensor(t_img)
         M = TF.to_tensor(m_img)

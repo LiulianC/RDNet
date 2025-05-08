@@ -10,7 +10,7 @@ import numpy as np
 import json
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as F 
 import torch.utils.checkpoint as checkpoint
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 
@@ -328,6 +328,7 @@ class BasicLayer(nn.Module):
             return x, H, W, x_down, Wh, Ww
         else:
             return x, H, W, x, H, W
+        # BasicLayer返回 通道加倍 分辨率减半
 
 
 
@@ -487,6 +488,7 @@ class FocalNet(nn.Module):
                 use_layerscale=use_layerscale, 
                 use_checkpoint=use_checkpoint)
             self.layers.append(layer)
+            # BasicLayer返回 通道加倍 分辨率减半
 
         # num_features 是一个列表
         num_features = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
@@ -499,6 +501,46 @@ class FocalNet(nn.Module):
             self.add_module(layer_name, layer)
 
         self._freeze_stages()
+
+
+
+
+
+
+    def forward(self, x):
+        """Forward function."""
+        x_emb = self.patch_embed(x) # # 分块嵌入 → [B, C', H', W']
+        Wh, Ww = x_emb.size(2), x_emb.size(3)   
+
+        x = x_emb.flatten(2).transpose(1, 2)    # 序列化为 [B, H'W', C]
+        x = self.pos_drop(x)    # # 随机丢弃
+
+        # 每层 BasicLayer类 包含多个 FocalModulationBlock，通道数逐层翻倍
+        outs = []
+        for i in range(self.num_layers):
+            layer = self.layers[i]
+            x_out, H, W, x, Wh, Ww = layer(x, Wh, Ww)   # 逐层处理       
+
+            if i in self.out_indices: 
+                # 在模型初始化时，通过以下代码为每个输出阶段添加归一化层    
+                norm_layer = getattr(self, f'norm{i}') 
+                x_out = norm_layer(x_out) # 归一化并输出
+                            
+                
+                # 又提取出通道加倍 分辨率减半的特征图 变成下一次的输入
+                out = x_out.view(-1, H, W, self.num_features[i]).permute(0, 3, 1, 2).contiguous()
+                
+                outs.append(out)
+        return outs, x_emb # 多尺度特征 + 初始块
+
+
+    def train(self, mode=True):
+        """Convert the model into training mode while keep layers freezed."""
+        super(FocalNet, self).train(mode)
+        self._freeze_stages()
+
+
+
 
     # 冻结指定阶段的参数（如 frozen_stages=2 冻结前两层的权重），用于迁移学习或部分微调
     def _freeze_stages(self): 
@@ -541,34 +583,6 @@ class FocalNet(nn.Module):
         else:
             raise TypeError('pretrained must be a str or None')
 
-    def forward(self, x):
-        """Forward function."""
-        x_emb = self.patch_embed(x) # # 分块嵌入 → [B, C', H', W']
-        Wh, Ww = x_emb.size(2), x_emb.size(3)   
-
-        x = x_emb.flatten(2).transpose(1, 2)    # 序列化为 [B, H'W', C]
-        x = self.pos_drop(x)    # # 随机丢弃
-
-        # 每层 BasicLayer类 包含多个 FocalModulationBlock，通道数逐层翻倍
-        outs = []
-        for i in range(self.num_layers):
-            layer = self.layers[i]
-            x_out, H, W, x, Wh, Ww = layer(x, Wh, Ww)   # 逐层处理       
-
-            if i in self.out_indices: 
-            # 在模型初始化时，通过以下代码为每个输出阶段添加归一化层    
-                norm_layer = getattr(self, f'norm{i}') 
-                x_out = norm_layer(x_out) # 归一化并输出
-            # 每层输出特征被归一化并重塑为 [B, C, H, W]，存入 outs 列表。                  
-                out = x_out.view(-1, H, W, self.num_features[i]).permute(0, 3, 1, 2).contiguous()
-                outs.append(out)
-        return outs, x_emb # 多尺度特征 + 初始块
-
-
-    def train(self, mode=True):
-        """Convert the model into training mode while keep layers freezed."""
-        super(FocalNet, self).train(mode)
-        self._freeze_stages()
 
 
 # FocalNet 模型工厂函数​​，根据指定的模型名称（如 focalnet_L_384_22k）和可选参数，
